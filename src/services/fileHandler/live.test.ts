@@ -25,11 +25,14 @@ function createBlobBackedFile(bytes: BlobPart, fileName: string, type: string): 
       type,
       size: part.byteLength,
       lastModified: Date.now(),
+      webkitRelativePath: '',
       arrayBuffer: async () =>
         part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) as ArrayBuffer,
+      bytes: async () => new Uint8Array(part),
+      text: async () => part.toString('utf-8'),
       slice: (start?: number, end?: number) => makePart(part.subarray(start ?? 0, end ?? part.byteLength)),
       stream: () => new Blob([part]).stream(),
-    }) as File
+    }) as unknown as File
 
   return makePart(buffer)
 }

@@ -222,7 +222,6 @@ export const FileHandlerLive = Layer.effect(
             new ValidationError({
               message: `File ${fileName} could not be parsed as DICOM: ${error}`,
               fileName,
-              cause: error,
             }),
         })
 
