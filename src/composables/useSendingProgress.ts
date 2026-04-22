@@ -1,10 +1,17 @@
 import { ref, computed } from 'vue'
 
-interface StudySendingProgress {
+export interface StudySendingProgress {
   isProcessing: boolean
   progress: number
   totalFiles: number
+  sentCount?: number
+  failedCount?: number
   currentFile?: string
+  retryingFile?: string
+  retryAttempt?: number
+  statusText?: string
+  lastFailureKind?: string
+  lastFailedFile?: string
 }
 
 // Global state for sending progress

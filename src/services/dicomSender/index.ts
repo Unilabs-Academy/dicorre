@@ -1,24 +1,425 @@
 import { Effect, Context, Layer } from "effect"
 import type { DicomFile } from '@/types/dicom'
 import type { DicomServerConfig } from '@/services/config/schema'
-import { NetworkError, ValidationError, type DicomSenderError, type StorageErrorType } from '@/types/effects'
+import { CancelledError, NetworkError, ValidationError, type DicomSenderError, type StorageErrorType } from '@/types/effects'
 import { OPFSStorage } from '@/services/opfsStorage'
+
+export type SendFailureKind = 'timeout' | 'network' | 'http' | 'server-reported' | 'validation'
+
+export interface SendWarningResult {
+  readonly file: DicomFile
+  readonly fileName: string
+  readonly sopInstanceUID?: string
+  readonly message: string
+  readonly httpStatus?: number
+}
+
+export interface SendSkippedResult {
+  readonly file: DicomFile
+  readonly fileName: string
+  readonly reason: string
+}
+
+export interface SendFailureResult {
+  readonly file: DicomFile
+  readonly fileName: string
+  readonly id: string
+  readonly sopInstanceUID?: string
+  readonly modality?: string
+  readonly fileSize: number
+  readonly attempts: number
+  readonly failureKind: SendFailureKind
+  readonly httpStatus?: number
+  readonly message: string
+}
+
+export interface SendSuccessResult {
+  readonly file: DicomFile
+  readonly fileName: string
+  readonly attempts: number
+  readonly httpStatus?: number
+  readonly warnings: SendWarningResult[]
+}
+
+export interface SendStudyResult {
+  readonly succeeded: SendSuccessResult[]
+  readonly failed: SendFailureResult[]
+  readonly skipped: SendSkippedResult[]
+  readonly warnings: SendWarningResult[]
+  readonly total: number
+  readonly attempted: number
+  readonly succeededCount: number
+  readonly failedCount: number
+  readonly skippedCount: number
+  readonly warningCount: number
+}
+
+export interface SendProgressUpdate {
+  readonly total: number
+  readonly completed: number
+  readonly percentage: number
+  readonly currentFile?: DicomFile
+  readonly sentCount: number
+  readonly failedCount: number
+  readonly retryingFile?: DicomFile
+  readonly retryAttempt?: number
+  readonly status: 'sending' | 'retrying' | 'waiting' | 'timed-out'
+  readonly statusText?: string
+}
+
+interface ParsedStowIssue {
+  readonly sopInstanceUID?: string
+  readonly message: string
+  readonly warningReason?: string
+  readonly failureReason?: string
+}
+
+interface ParsedStowResponse {
+  readonly failures: ParsedStowIssue[]
+  readonly warnings: ParsedStowIssue[]
+}
+
+interface SendAttemptSuccess {
+  readonly httpStatus?: number
+  readonly warnings: ParsedStowIssue[]
+}
+
+class SendAttemptError extends Error {
+  readonly failureKind: SendFailureKind
+  readonly httpStatus?: number
+  readonly retryable: boolean
+
+  constructor(params: {
+    message: string
+    failureKind: SendFailureKind
+    httpStatus?: number
+    retryable: boolean
+  }) {
+    super(params.message)
+    this.name = 'SendAttemptError'
+    this.failureKind = params.failureKind
+    this.httpStatus = params.httpStatus
+    this.retryable = params.retryable
+  }
+}
+
+const MAX_RETRIES = 2
+
+const FAILURE_REASON_MAP: Record<string, string> = {
+  '272': 'Duplicate SOP instance',
+  '290': 'Storage out of resources',
+  '43264': 'Coercion of data elements',
+  '43265': 'Dataset does not match SOP class',
+  '45056': 'Cannot understand'
+}
+
+const WARNING_REASON_MAP: Record<string, string> = {
+  '45056': 'Elements discarded',
+  '45057': 'Dataset does not match SOP class',
+  '45058': 'Coercion of data elements'
+}
+
+const getRetryDelayMs = (attemptNumber: number): number => {
+  const base = attemptNumber === 1 ? 1000 : 3000
+  const jitter = Math.floor(Math.random() * 250)
+  return base + jitter
+}
+
+const shouldRetryStatus = (status?: number): boolean =>
+  status === 408 || status === 429 || (status !== undefined && status >= 500)
+
+const getValueList = (dataset: Record<string, any>, naturalKey: string, hexKey: string): any[] => {
+  const natural = dataset[naturalKey]
+  if (Array.isArray(natural)) return natural
+  if (natural !== undefined && natural !== null) return [natural]
+
+  const hex = dataset[hexKey]
+  if (hex && Array.isArray(hex.Value)) return hex.Value
+
+  return []
+}
+
+const getFirstStringValue = (dataset: Record<string, any>, naturalKey: string, hexKey: string): string | undefined => {
+  const values = getValueList(dataset, naturalKey, hexKey)
+  const first = values[0]
+  return typeof first === 'string' || typeof first === 'number' ? String(first) : undefined
+}
+
+const formatReason = (value: string | undefined, lookup: Record<string, string>, fallback: string): string => {
+  if (!value) return fallback
+  return lookup[value] || `${fallback} (${value})`
+}
+
+const parseIssueSequence = (
+  dataset: Record<string, any>,
+  naturalKey: string,
+  hexKey: string,
+  kind: 'failure' | 'warning'
+): ParsedStowIssue[] => {
+  const items = getValueList(dataset, naturalKey, hexKey)
+  return items
+    .filter((item): item is Record<string, any> => !!item && typeof item === 'object')
+    .filter((item) => {
+      if (kind === 'failure') return true
+      return !!getFirstStringValue(item, 'WarningReason', '00081196')
+    })
+    .map((item) => {
+      const sopInstanceUID = getFirstStringValue(item, 'ReferencedSOPInstanceUID', '00081155')
+      const failureReason = getFirstStringValue(item, 'FailureReason', '00081197')
+      const warningReason = getFirstStringValue(item, 'WarningReason', '00081196')
+
+      let message = kind === 'failure'
+        ? formatReason(failureReason, FAILURE_REASON_MAP, 'Server rejected instance')
+        : formatReason(warningReason, WARNING_REASON_MAP, 'Server accepted with warning')
+
+      if (!failureReason && !warningReason && sopInstanceUID) {
+        message = kind === 'failure'
+          ? `Server rejected SOP ${sopInstanceUID}`
+          : `Server warned for SOP ${sopInstanceUID}`
+      }
+
+      return {
+        sopInstanceUID,
+        message,
+        failureReason,
+        warningReason
+      }
+    })
+}
+
+const parseStowResponse = (bodyText: string): ParsedStowResponse => {
+  if (!bodyText.trim()) {
+    return { failures: [], warnings: [] }
+  }
+
+  try {
+    const parsed = JSON.parse(bodyText)
+    const dataset = Array.isArray(parsed) ? parsed[0] : parsed
+    if (!dataset || typeof dataset !== 'object') {
+      return { failures: [], warnings: [] }
+    }
+
+    return {
+      failures: [
+        ...parseIssueSequence(dataset, 'FailedSOPSequence', '00081198', 'failure'),
+        ...parseIssueSequence(dataset, 'OtherFailuresSequence', '0008119A', 'failure')
+      ],
+      warnings: parseIssueSequence(dataset, 'ReferencedSOPSequence', '00081199', 'warning')
+    }
+  } catch {
+    return { failures: [], warnings: [] }
+  }
+}
+
+const toWarningResult = (file: DicomFile, issue: ParsedStowIssue, httpStatus?: number): SendWarningResult => ({
+  file,
+  fileName: file.fileName,
+  sopInstanceUID: issue.sopInstanceUID || file.metadata?.sopInstanceUID,
+  message: issue.message,
+  httpStatus
+})
+
+const toFailureResult = (
+  file: DicomFile,
+  failureKind: SendFailureKind,
+  message: string,
+  attempts: number,
+  httpStatus?: number
+): SendFailureResult => ({
+  file,
+  fileName: file.fileName,
+  id: file.id,
+  sopInstanceUID: file.metadata?.sopInstanceUID,
+  modality: file.metadata?.modality,
+  fileSize: file.fileSize,
+  attempts,
+  failureKind,
+  httpStatus,
+  message
+})
+
+const executeSendAttempt = (
+  candidate: DicomFile,
+  serverConfig: DicomServerConfig,
+  signal?: AbortSignal
+): Effect.Effect<SendAttemptSuccess, SendAttemptError | ValidationError | CancelledError> =>
+  Effect.gen(function* () {
+    if (!candidate.arrayBuffer || candidate.arrayBuffer.byteLength === 0) {
+      return yield* Effect.fail(new ValidationError({
+        message: `File ${candidate.fileName} has no data`,
+        fileName: candidate.fileName
+      }))
+    }
+
+    if (!candidate.metadata?.sopInstanceUID) {
+      return yield* Effect.fail(new ValidationError({
+        message: `File ${candidate.fileName} has no SOP Instance UID`,
+        fileName: candidate.fileName
+      }))
+    }
+
+    yield* Effect.log(`Sending DICOM file: ${candidate.fileName}`)
+
+    const headers: Record<string, string> = {
+      'Accept': 'application/dicom+json',
+      ...serverConfig.headers
+    }
+
+    if (serverConfig.auth) {
+      if (serverConfig.auth.type === 'basic') {
+        headers['Authorization'] = `Basic ${serverConfig.auth.credentials}`
+      } else if (serverConfig.auth.type === 'bearer') {
+        headers['Authorization'] = `Bearer ${serverConfig.auth.credentials}`
+      }
+    }
+
+    const uint8Array = new Uint8Array(candidate.arrayBuffer)
+    const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2)}`
+    const contentType = `multipart/related; type="application/dicom"; boundary=${boundary}`
+
+    const textPart = [
+      `--${boundary}`,
+      'Content-Type: application/dicom',
+      '',
+      ''
+    ].join('\r\n')
+
+    const endBoundary = `\r\n--${boundary}--`
+    const textPartBytes = new TextEncoder().encode(textPart)
+    const endBoundaryBytes = new TextEncoder().encode(endBoundary)
+    const totalLength = textPartBytes.length + uint8Array.length + endBoundaryBytes.length
+    const body = new Uint8Array(totalLength)
+
+    let offset = 0
+    body.set(textPartBytes, offset)
+    offset += textPartBytes.length
+    body.set(uint8Array, offset)
+    offset += uint8Array.length
+    body.set(endBoundaryBytes, offset)
+
+    const timeoutMs = serverConfig.timeout ?? 30000
+    const controller = new AbortController()
+    let cancelled = false
+    const abortForTimeout = () => {
+      controller.abort()
+    }
+    const abortForCancel = () => {
+      cancelled = true
+      controller.abort()
+    }
+    const timeoutId = setTimeout(abortForTimeout, timeoutMs)
+    const onCancel = () => abortForCancel()
+
+    if (signal) {
+      if (signal.aborted) {
+        cancelled = true
+        clearTimeout(timeoutId)
+        return yield* Effect.fail(new CancelledError({
+          message: `Sending cancelled while sending ${candidate.fileName}`
+        }))
+      }
+      signal.addEventListener('abort', onCancel, { once: true })
+    }
+
+    try {
+      const stowUrl = `${serverConfig.url}/studies`
+      const response = yield* Effect.tryPromise({
+        try: async () => fetch(stowUrl, {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Content-Type': contentType
+          },
+          body,
+          signal: controller.signal
+        }),
+        catch: (error) => {
+          if (cancelled || signal?.aborted) {
+            return new CancelledError({
+              message: `Sending cancelled while sending ${candidate.fileName}`,
+              cause: error
+            })
+          }
+
+          if ((error as Error)?.name === 'AbortError') {
+            return new SendAttemptError({
+              message: `Timed out after ${timeoutMs}ms while sending ${candidate.fileName}`,
+              failureKind: 'timeout',
+              retryable: true
+            })
+          }
+
+          return new SendAttemptError({
+            message: `Network error while sending ${candidate.fileName}: ${error instanceof Error ? error.message : String(error)}`,
+            failureKind: 'network',
+            retryable: true
+          })
+        }
+      })
+
+      const responseText = yield* Effect.tryPromise({
+        try: () => response.text(),
+        catch: (error) => new SendAttemptError({
+          message: `Failed to read STOW-RS response for ${candidate.fileName}: ${error instanceof Error ? error.message : String(error)}`,
+          failureKind: 'network',
+          httpStatus: response.status,
+          retryable: shouldRetryStatus(response.status)
+        })
+      })
+
+      if (!response.ok) {
+        return yield* Effect.fail(new SendAttemptError({
+          message: `STOW-RS failed: ${response.status} ${response.statusText}${responseText ? ` - ${responseText}` : ''}`,
+          failureKind: 'http',
+          httpStatus: response.status,
+          retryable: shouldRetryStatus(response.status)
+        }))
+      }
+
+      const parsed = parseStowResponse(responseText)
+      if (parsed.failures.length > 0) {
+        const firstFailure = parsed.failures[0]
+        return yield* Effect.fail(new SendAttemptError({
+          message: firstFailure?.message || `Server reported failure for ${candidate.fileName}`,
+          failureKind: 'server-reported',
+          httpStatus: response.status,
+          retryable: false
+        }))
+      }
+
+      return {
+        httpStatus: response.status,
+        warnings: parsed.warnings
+      }
+    } finally {
+      clearTimeout(timeoutId)
+      signal?.removeEventListener('abort', onCancel)
+    }
+  })
 
 
 export class DicomSender extends Context.Tag("DicomSender")<
   DicomSender,
   {
     readonly testConnection: (config: DicomServerConfig) => Effect.Effect<boolean, DicomSenderError>
-    readonly sendFile: (file: DicomFile, config: DicomServerConfig) => Effect.Effect<void, DicomSenderError>
+    readonly sendFile: (
+      file: DicomFile,
+      config: DicomServerConfig,
+      options?: { signal?: AbortSignal }
+    ) => Effect.Effect<SendSuccessResult, DicomSenderError>
     readonly sendFiles: (
       files: DicomFile[],
       config: DicomServerConfig,
       concurrency?: number,
       options?: {
-        onProgress?: (completed: number, total: number, currentFile?: DicomFile) => void
+        signal?: AbortSignal
+        onProgress?: (progress: SendProgressUpdate) => void
         onSkip?: (file: DicomFile, reason: string) => void
+        onFileRetry?: (failure: SendFailureResult, nextAttempt: number, delayMs: number) => void
+        onFileFailure?: (failure: SendFailureResult) => void
+        onFileWarning?: (warning: SendWarningResult) => void
       }
-    ) => Effect.Effect<DicomFile[], DicomSenderError | StorageErrorType, OPFSStorage | DicomSender>
+    ) => Effect.Effect<SendStudyResult, DicomSenderError | StorageErrorType, OPFSStorage | DicomSender>
   }
 >() { }
 
@@ -50,96 +451,34 @@ export const DicomSenderLive = Layer.succeed(
         return result
       }),
 
-    sendFile: (file: DicomFile, config: DicomServerConfig): Effect.Effect<void, DicomSenderError> =>
+    sendFile: (
+      file: DicomFile,
+      config: DicomServerConfig,
+      options?: { signal?: AbortSignal }
+    ): Effect.Effect<SendSuccessResult, DicomSenderError> =>
       Effect.gen(function* () {
-
-        if (!file.arrayBuffer || file.arrayBuffer.byteLength === 0) {
-          return yield* Effect.fail(new ValidationError({
-            message: `File ${file.fileName} has no data`,
-            fileName: file.fileName
-          }))
-        }
-
-        if (!file.metadata?.sopInstanceUID) {
-          return yield* Effect.fail(new ValidationError({
-            message: `File ${file.fileName} has no SOP Instance UID`,
-            fileName: file.fileName
-          }))
-        }
-
-        yield* Effect.tryPromise({
-          try: async () => {
-            console.log(`Sending DICOM file: ${file.fileName}`)
-
-            const headers: Record<string, string> = {
-              'Accept': 'application/dicom+json',
-              ...config.headers
+        const result = yield* executeSendAttempt(file, config, options?.signal).pipe(
+          Effect.mapError((error) => {
+            if (error instanceof CancelledError || error instanceof ValidationError) {
+              return error
             }
 
-            // Add authentication headers if configured
-            if (config.auth) {
-              if (config.auth.type === 'basic') {
-                headers['Authorization'] = `Basic ${config.auth.credentials}`
-              } else if (config.auth.type === 'bearer') {
-                headers['Authorization'] = `Bearer ${config.auth.credentials}`
-              }
-            }
-
-            // Convert ArrayBuffer to Uint8Array
-            const uint8Array = new Uint8Array(file.arrayBuffer)
-
-            // Create proper multipart form data for STOW-RS
-            const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2)}`
-            const contentType = `multipart/related; type="application/dicom"; boundary=${boundary}`
-
-            // Build multipart body
-            const textPart = [
-              `--${boundary}`,
-              'Content-Type: application/dicom',
-              '',
-              ''
-            ].join('\r\n')
-
-            const endBoundary = `\r\n--${boundary}--`
-
-            // Create the full body with binary data
-            const textPartBytes = new TextEncoder().encode(textPart)
-            const endBoundaryBytes = new TextEncoder().encode(endBoundary)
-
-            // Combine text part + DICOM data + end boundary
-            const totalLength = textPartBytes.length + uint8Array.length + endBoundaryBytes.length
-            const body = new Uint8Array(totalLength)
-
-            let offset = 0
-            body.set(textPartBytes, offset)
-            offset += textPartBytes.length
-            body.set(uint8Array, offset)
-            offset += uint8Array.length
-            body.set(endBoundaryBytes, offset)
-
-            // Store instance using DICOM web STOW-RS
-            const stowUrl = `${config.url}/studies`
-            const response = await fetch(stowUrl, {
-              method: 'POST',
-              headers: {
-                ...headers,
-                'Content-Type': contentType
-              },
-              body: body
+            return new NetworkError({
+              message: error.message,
+              url: `${config.url}/studies`,
+              status: error.httpStatus,
+              cause: error
             })
-
-            if (!response.ok) {
-              const errorText = await response.text()
-              throw new Error(`STOW-RS failed: ${response.status} ${response.statusText} - ${errorText}`)
-            }
-
-            console.log(`Successfully sent ${file.fileName} to DICOM server`)
-          },
-          catch: (error) => new NetworkError({
-            message: `Failed to send file ${file.fileName} to DICOM server - ${config.url}`,
-            cause: error
           })
-        })
+        )
+
+        return {
+          file,
+          fileName: file.fileName,
+          attempts: 1,
+          httpStatus: result.httpStatus,
+          warnings: result.warnings.map((warning) => toWarningResult(file, warning, result.httpStatus))
+        }
       }),
 
     sendFiles: (
@@ -147,21 +486,44 @@ export const DicomSenderLive = Layer.succeed(
       config: DicomServerConfig,
       concurrency = 3,
       options?: {
-        onProgress?: (completed: number, total: number, currentFile?: DicomFile) => void
+        signal?: AbortSignal
+        onProgress?: (progress: SendProgressUpdate) => void
         onSkip?: (file: DicomFile, reason: string) => void
+        onFileRetry?: (failure: SendFailureResult, nextAttempt: number, delayMs: number) => void
+        onFileFailure?: (failure: SendFailureResult) => void
+        onFileWarning?: (warning: SendWarningResult) => void
       }
-    ): Effect.Effect<DicomFile[], DicomSenderError | StorageErrorType, OPFSStorage | DicomSender> =>
+    ): Effect.Effect<SendStudyResult, DicomSenderError | StorageErrorType, OPFSStorage | DicomSender> =>
       Effect.gen(function* () {
-        if (files.length === 0) return []
-
-        // Skip non-anonymized files with callback, and fail only if none remain
-        const filesToSend = files.filter((f) => f.anonymized)
-        const nonAnonymized = files.filter((f) => !f.anonymized)
-        if (nonAnonymized.length > 0) {
-          for (const f of nonAnonymized) {
-            try { options?.onSkip?.(f, 'not anonymized') } catch { }
+        if (files.length === 0) {
+          return {
+            succeeded: [],
+            failed: [],
+            skipped: [],
+            warnings: [],
+            total: 0,
+            attempted: 0,
+            succeededCount: 0,
+            failedCount: 0,
+            skippedCount: 0,
+            warningCount: 0
           }
         }
+
+        const filesToSend = files.filter((f) => f.anonymized)
+        const nonAnonymized = files.filter((f) => !f.anonymized)
+        const skipped: SendSkippedResult[] = nonAnonymized.map((file) => ({
+          file,
+          fileName: file.fileName,
+          reason: 'not anonymized'
+        }))
+
+        if (nonAnonymized.length > 0) {
+          for (const file of nonAnonymized) {
+            try { options?.onSkip?.(file, 'not anonymized') } catch { }
+          }
+        }
+
         if (filesToSend.length === 0) {
           return yield* Effect.fail(new ValidationError({
             message: 'No anonymized files to send',
@@ -171,25 +533,183 @@ export const DicomSenderLive = Layer.succeed(
 
         const opfs = yield* OPFSStorage
         const sender = yield* DicomSender
-        let completed = 0
         const total = filesToSend.length
+        const succeeded: SendSuccessResult[] = []
+        const failed: SendFailureResult[] = []
+        const warnings: SendWarningResult[] = []
+        let sentCount = 0
+        let failedCount = 0
+        let completed = 0
+
+        const emitProgress = (patch: Partial<SendProgressUpdate>) => {
+          try {
+            options?.onProgress?.({
+              total,
+              completed,
+              percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+              sentCount,
+              failedCount,
+              status: 'sending',
+              ...patch
+            })
+          } catch { }
+        }
+
+        const failIfCancelled = () =>
+          options?.signal?.aborted
+            ? Effect.fail(new CancelledError({ message: 'Sending was cancelled' }))
+            : Effect.void
 
         const sendEffects = filesToSend.map((file) =>
           Effect.gen(function* () {
-            // Always reload from OPFS to ensure sending canonical anonymized bytes
-            const loaded = yield* opfs.loadFile(file.id)
-            const toSend = { ...file, arrayBuffer: loaded }
-            yield* sender.sendFile(toSend, config)
-            completed++
-            options?.onProgress?.(completed, total, toSend)
-            return toSend
+            yield* failIfCancelled()
+
+            emitProgress({
+              currentFile: file,
+              retryingFile: undefined,
+              retryAttempt: undefined,
+              status: 'sending',
+              statusText: `Sending ${file.fileName}`
+            })
+
+            let attempts = 0
+            while (attempts <= MAX_RETRIES) {
+              yield* failIfCancelled()
+              attempts++
+
+              const loaded = yield* opfs.loadFile(file.id).pipe(
+                Effect.catchAll((error) => {
+                  const failure = toFailureResult(
+                    file,
+                    'validation',
+                    `Failed to load ${file.fileName} from storage: ${(error as any)?.message || String(error)}`,
+                    attempts
+                  )
+                  failed.push(failure)
+                  failedCount++
+                  completed++
+                  options?.onFileFailure?.(failure)
+                  emitProgress({
+                    currentFile: file,
+                    retryingFile: undefined,
+                    retryAttempt: undefined,
+                    status: 'timed-out',
+                    statusText: failure.message
+                  })
+                  return Effect.succeed(undefined)
+                })
+              )
+
+              if (!loaded) {
+                return undefined
+              }
+
+              const toSend = { ...file, arrayBuffer: loaded }
+              const result = yield* sender.sendFile(toSend, config, { signal: options?.signal }).pipe(
+                Effect.either
+              )
+
+              if (result._tag === 'Left' && result.left instanceof CancelledError) {
+                return yield* Effect.fail(result.left)
+              }
+
+              if (result._tag === 'Right') {
+                const successResult: SendSuccessResult = {
+                  ...result.right,
+                  attempts
+                }
+                succeeded.push(successResult)
+                sentCount++
+                completed++
+                for (const warning of successResult.warnings) {
+                  warnings.push(warning)
+                  options?.onFileWarning?.(warning)
+                }
+                emitProgress({
+                  currentFile: toSend,
+                  retryingFile: undefined,
+                  retryAttempt: undefined,
+                  status: 'sending',
+                  statusText: `Sent ${toSend.fileName}`
+                })
+                return successResult
+              }
+
+              const error = result.left
+              if (error instanceof ValidationError) {
+                const failure = toFailureResult(toSend, 'validation', error.message, attempts)
+                failed.push(failure)
+                failedCount++
+                completed++
+                options?.onFileFailure?.(failure)
+                emitProgress({
+                  currentFile: toSend,
+                  retryingFile: undefined,
+                  retryAttempt: undefined,
+                  status: 'sending',
+                  statusText: failure.message
+                })
+                return undefined
+              }
+
+              const cause = (error as NetworkError).cause
+              const attemptError = cause instanceof SendAttemptError ? cause : undefined
+              const failureKind = attemptError?.failureKind || ((error as NetworkError).status ? 'http' : 'network')
+              const failure = toFailureResult(
+                toSend,
+                failureKind,
+                error.message,
+                attempts,
+                (error as NetworkError).status
+              )
+
+              if (attemptError?.retryable && attempts <= MAX_RETRIES) {
+                const delayMs = getRetryDelayMs(attempts)
+                options?.onFileRetry?.(failure, attempts + 1, delayMs)
+                emitProgress({
+                  currentFile: toSend,
+                  retryingFile: toSend,
+                  retryAttempt: attempts,
+                  status: failureKind === 'timeout' ? 'timed-out' : 'waiting',
+                  statusText: `Retry ${attempts}/${MAX_RETRIES} for ${toSend.fileName}`
+                })
+                yield* Effect.sleep(delayMs)
+                continue
+              }
+
+              failed.push(failure)
+              failedCount++
+              completed++
+              options?.onFileFailure?.(failure)
+              emitProgress({
+                currentFile: toSend,
+                retryingFile: undefined,
+                retryAttempt: undefined,
+                status: failureKind === 'timeout' ? 'timed-out' : 'sending',
+                statusText: failure.message
+              })
+              return undefined
+            }
+
+            return undefined
           })
         )
 
-        const results = yield* Effect.all(sendEffects, { concurrency, batching: true })
-        return results
+        yield* failIfCancelled()
+        yield* Effect.all(sendEffects, { concurrency, batching: true })
+
+        return {
+          succeeded,
+          failed,
+          skipped,
+          warnings,
+          total: files.length,
+          attempted: filesToSend.length,
+          succeededCount: succeeded.length,
+          failedCount: failed.length,
+          skippedCount: skipped.length,
+          warningCount: warnings.length
+        }
       })
   }
 )
-
-

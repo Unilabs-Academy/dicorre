@@ -1,120 +1,310 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Effect, Layer } from 'effect'
-import { DicomSender, DicomSenderLive } from './index'
-import { ConfigServiceLive } from '../config'
+import {
+  DicomSender,
+  DicomSenderLive,
+  type SendStudyResult
+} from './index'
+import { OPFSStorage } from '@/services/opfsStorage'
+import { StorageError } from '@/types/effects'
 import type { DicomFile } from '@/types/dicom'
-import { ConfigPersistence } from '@/services/config/configPersistence'
-import type { AppConfig } from '@/services/config/schema'
 
-describe('DicomSender Service (Effect Service Testing)', () => {
-  // Create a test persistence layer
-  const ConfigPersistenceTest = Layer.succeed(
-    ConfigPersistence,
-    {
-      load: Effect.succeed(null),
-      save: (_cfg: AppConfig) => Effect.succeed(undefined),
-      clear: Effect.succeed(undefined)
-    }
+const originalFetch = globalThis.fetch
+
+const createDicomFile = (overrides: Partial<DicomFile> = {}): DicomFile => ({
+  id: overrides.id ?? 'file-1',
+  fileName: overrides.fileName ?? 'test.dcm',
+  fileSize: overrides.fileSize ?? 256,
+  arrayBuffer: overrides.arrayBuffer ?? new ArrayBuffer(256),
+  anonymized: overrides.anonymized ?? true,
+  metadata: {
+    patientName: 'Test Patient',
+    patientId: 'TEST001',
+    studyInstanceUID: '1.2.3.study',
+    studyDate: '20260101',
+    studyDescription: 'Test Study',
+    seriesInstanceUID: '1.2.3.series',
+    seriesDescription: 'Test Series',
+    modality: 'MR',
+    sopInstanceUID: overrides.metadata?.sopInstanceUID ?? `1.2.3.sop.${overrides.id ?? '1'}`,
+    ...overrides.metadata
+  }
+})
+
+const makeOpfsLayer = (buffers: Record<string, ArrayBuffer>) =>
+  Layer.succeed(
+    OPFSStorage,
+    OPFSStorage.of({
+      saveFile: () => Effect.succeed(undefined),
+      loadFile: (fileId: string) =>
+        fileId in buffers
+          ? Effect.succeed(buffers[fileId]!)
+          : Effect.fail(new StorageError({ message: `Missing OPFS file ${fileId}`, fileName: fileId })),
+      fileExists: () => Effect.succeed(true),
+      deleteFile: () => Effect.succeed(undefined),
+      listFiles: Effect.succeed([]),
+      clearAllFiles: Effect.succeed(undefined),
+      getStorageInfo: Effect.succeed({ used: 0, quota: 0 })
+    })
   )
 
-  // Test the service through Effect.provide pattern
-  const testLayer = Layer.mergeAll(
-    ConfigServiceLive.pipe(Layer.provide(ConfigPersistenceTest)),
-    DicomSenderLive.pipe(Layer.provide(ConfigServiceLive.pipe(Layer.provide(ConfigPersistenceTest))))
+const runSendFile = <A>(effect: Effect.Effect<A, unknown, DicomSender>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(DicomSenderLive)))
+
+const runSendFiles = (
+  effect: Effect.Effect<SendStudyResult, unknown, DicomSender | OPFSStorage>,
+  files: DicomFile[]
+) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.provide(Layer.mergeAll(DicomSenderLive, makeOpfsLayer(
+        Object.fromEntries(files.map((file) => [file.id, file.arrayBuffer]))
+      )))
+    )
   )
 
-  const runTest = <A, E>(effect: Effect.Effect<A, E, DicomSender>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(testLayer)))
+afterEach(() => {
+  globalThis.fetch = originalFetch
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
-  describe('Connection testing', () => {
-    it('should test connection', async () => {
-      // Since we don't have a real server, this should fail gracefully
-      await expect(
-        runTest(Effect.gen(function* () {
-          const sender = yield* DicomSender
-          return yield* sender.testConnection({
-            url: 'http://localhost:8042',
-            description: 'Test Server'
-          })
-        }))
-      ).rejects.toThrow()
-    })
+describe('DicomSender Service', () => {
+  it('retries transient network failures and succeeds', async () => {
+    vi.useFakeTimers()
+    const file = createDicomFile()
+    const retrySpy = vi.fn()
+
+    globalThis.fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockResolvedValueOnce(new Response('', { status: 200 })) as typeof fetch
+
+    const promise = runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1, {
+          onFileRetry: retrySpy
+        })
+      }),
+      [file]
+    )
+
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+    expect(retrySpy).toHaveBeenCalledTimes(1)
+    expect(result.succeededCount).toBe(1)
+    expect(result.failedCount).toBe(0)
+    expect(result.succeeded[0]?.attempts).toBe(2)
   })
 
-  describe('File sending', () => {
-    it('should send DICOM file', async () => {
-      const mockFile: DicomFile = {
-        id: 'test-file',
-        fileName: 'test.dcm',
-        fileSize: 1000,
-        arrayBuffer: new ArrayBuffer(1000),
-        anonymized: true,
-        metadata: {
-          patientName: 'Test Patient',
-          patientId: 'TEST001',
-          studyInstanceUID: '1.2.3.4.5',
-          studyDate: '20241201',
-          studyDescription: 'Test Study',
-          seriesInstanceUID: '1.2.3.4.6',
-          seriesDescription: 'Test Series',
-          modality: 'CT',
-          sopInstanceUID: '1.2.3.4.7'
-        }
-      }
+  it('records a timeout failure after exhausting retries', async () => {
+    vi.useFakeTimers()
+    const file = createDicomFile()
+    const retrySpy = vi.fn()
 
-      // Should fail gracefully without a real server
-      await expect(
-        runTest(Effect.gen(function* () {
-          const sender = yield* DicomSender
-          return yield* sender.sendFile(mockFile, {
-            url: 'http://localhost:8042',
-            description: 'Test Server'
-          })
-        }))
-      ).rejects.toThrow()
-    })
+    globalThis.fetch = vi.fn()
+      .mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' })) as typeof fetch
 
+    const promise = runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 25,
+          description: 'Test Server'
+        }, 1, {
+          onFileRetry: retrySpy
+        })
+      }),
+      [file]
+    )
+
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await promise
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3)
+    expect(retrySpy).toHaveBeenCalledTimes(2)
+    expect(result.succeededCount).toBe(0)
+    expect(result.failedCount).toBe(1)
+    expect(result.failed[0]?.failureKind).toBe('timeout')
+    expect(result.failed[0]?.attempts).toBe(3)
   })
 
-  describe('Configuration', () => {
-    it('should test connection with valid config', async () => {
-      const validConfig = {
-        url: 'http://localhost:8081',
-        description: 'Test server'
-      }
+  it('does not retry non-retryable 400 responses', async () => {
+    const file = createDicomFile()
 
-      // This test expects the network call to fail since there's no actual server
-      await expect(
-        runTest(Effect.gen(function* () {
-          const sender = yield* DicomSender
-          return yield* sender.testConnection(validConfig)
-        }))
-      ).rejects.toThrow()
-    })
+    globalThis.fetch = vi.fn()
+      .mockResolvedValue(new Response('invalid dataset', { status: 400, statusText: 'Bad Request' })) as typeof fetch
 
-    it('should send file with valid config', async () => {
-      const validConfig = {
-        url: 'http://localhost:8080',
-        description: 'Test server'
-      }
+    const result = await runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1)
+      }),
+      [file]
+    )
 
-      const dicomFile: DicomFile = {
-        id: 'test-file',
-        fileName: 'test.dcm',
-        fileSize: 100,
-        arrayBuffer: new ArrayBuffer(100),
-        metadata: {
-          sopInstanceUID: '1.2.3.4.5.6'
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+    expect(result.failedCount).toBe(1)
+    expect(result.failed[0]?.failureKind).toBe('http')
+    expect(result.failed[0]?.attempts).toBe(1)
+  })
+
+  it('continues sending remaining files when one file fails', async () => {
+    const failingFile = createDicomFile({ id: 'file-fail', fileName: 'fail.dcm' })
+    const successfulFile = createDicomFile({ id: 'file-pass', fileName: 'pass.dcm' })
+
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('invalid dataset', { status: 400, statusText: 'Bad Request' }))
+      .mockResolvedValueOnce(new Response('', { status: 200 })) as typeof fetch
+
+    const result = await runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([failingFile, successfulFile], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1)
+      }),
+      [failingFile, successfulFile]
+    )
+
+    expect(result.succeededCount).toBe(1)
+    expect(result.failedCount).toBe(1)
+    expect(result.succeeded[0]?.fileName).toBe('pass.dcm')
+    expect(result.failed[0]?.fileName).toBe('fail.dcm')
+  })
+
+  it('treats STOW success bodies with failed SOP sequences as failed sends', async () => {
+    const file = createDicomFile()
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([{
+        '00081198': {
+          vr: 'SQ',
+          Value: [
+            {
+              '00081155': { vr: 'UI', Value: [file.metadata?.sopInstanceUID] },
+              '00081197': { vr: 'US', Value: [43265] }
+            }
+          ]
         }
-      }
+      }]), { status: 200 })
+    ) as typeof fetch
 
-      // This test expects the network call to fail since there's no actual server
-      await expect(
-        runTest(Effect.gen(function* () {
-          const sender = yield* DicomSender
-          return yield* sender.sendFile(dicomFile, validConfig)
-        }))
-      ).rejects.toThrow()
-    })
+    const result = await runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1)
+      }),
+      [file]
+    )
+
+    expect(result.succeededCount).toBe(0)
+    expect(result.failedCount).toBe(1)
+    expect(result.failed[0]?.failureKind).toBe('server-reported')
+  })
+
+  it('captures STOW warning sequences on otherwise successful sends', async () => {
+    const file = createDicomFile()
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([{
+        '00081199': {
+          vr: 'SQ',
+          Value: [
+            {
+              '00081155': { vr: 'UI', Value: [file.metadata?.sopInstanceUID] },
+              '00081196': { vr: 'US', Value: [45056] }
+            }
+          ]
+        }
+      }]), { status: 202 })
+    ) as typeof fetch
+
+    const result = await runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1)
+      }),
+      [file]
+    )
+
+    expect(result.succeededCount).toBe(1)
+    expect(result.warningCount).toBe(1)
+    expect(result.succeeded[0]?.warnings).toHaveLength(1)
+  })
+
+  it('does not treat a normal referenced SOP sequence as a warning', async () => {
+    const file = createDicomFile()
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([{
+        '00081199': {
+          vr: 'SQ',
+          Value: [
+            {
+              '00081155': { vr: 'UI', Value: [file.metadata?.sopInstanceUID] }
+            }
+          ]
+        }
+      }]), { status: 200 })
+    ) as typeof fetch
+
+    const result = await runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1)
+      }),
+      [file]
+    )
+
+    expect(result.succeededCount).toBe(1)
+    expect(result.warningCount).toBe(0)
+    expect(result.succeeded[0]?.warnings).toHaveLength(0)
+  })
+
+  it('returns structured success details from sendFile', async () => {
+    const file = createDicomFile()
+
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response('', { status: 200 })) as typeof fetch
+
+    const result = await runSendFile(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFile(file, {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        })
+      })
+    )
+
+    expect(result.fileName).toBe(file.fileName)
+    expect(result.attempts).toBe(1)
+    expect(result.warnings).toHaveLength(0)
   })
 })

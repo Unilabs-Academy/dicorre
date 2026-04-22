@@ -29,6 +29,11 @@ export class NetworkError extends Data.TaggedError("NetworkError")<{
   readonly cause?: unknown
 }> { }
 
+export class CancelledError extends Data.TaggedError("CancelledError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> { }
+
 export class FileSystemError extends Data.TaggedError("FileSystemError")<{
   readonly message: string
   readonly path?: string
@@ -64,7 +69,7 @@ export class PluginError extends Data.TaggedError("PluginError")<{
 // Union types for different service error domains
 export type DicomProcessorError = ParseError | ValidationError | FileSystemError
 export type AnonymizerError = AnonymizationError | ConfigurationError | FileSystemError | ParseError | ValidationError
-export type DicomSenderError = NetworkError | ValidationError | ConfigurationError
+export type DicomSenderError = NetworkError | ValidationError | ConfigurationError | CancelledError
 export type FileHandlerErrorType = FileHandlerError | ValidationError | FileSystemError
 export type StorageErrorType = StorageError | ValidationError
 export type PluginErrorType = PluginError | ValidationError

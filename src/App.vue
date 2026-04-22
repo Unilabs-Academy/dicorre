@@ -38,6 +38,9 @@ import {
 const runtime = ManagedRuntime.make(AppLayer)
 provide('appRuntime', runtime)
 const appState = useAppState(runtime)
+provide('studyActions', {
+  cancelStudySend: (studyId: string) => appState.cancelStudySend(studyId)
+})
 
 const { isDownloading, downloadSelectedStudies } = useDownload(runtime)
 const { loadConfigFromUrl } = useProjectSharing()

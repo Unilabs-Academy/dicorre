@@ -1,7 +1,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { Effect, Stream } from 'effect'
 import type { DicomFile, DicomStudy } from '@/types/dicom'
-import type { RuntimeType } from '@/types/effects'
+import { CancelledError, type RuntimeType } from '@/types/effects'
 import { DicomProcessor } from '@/services/dicomProcessor'
 import { ConfigService } from '@/services/config'
 import type { AppConfig, ProjectConfig } from '@/services/config/schema'
@@ -12,6 +12,12 @@ import { useSendingProgress } from '@/composables/useSendingProgress'
 import { useFileProcessing } from '@/composables/useFileProcessing'
 import { useDragAndDrop } from '@/composables/useDragAndDrop'
 import { useDicomSender } from '@/composables/useDicomSender'
+import type {
+  SendFailureResult,
+  SendProgressUpdate,
+  SendStudyResult,
+  SendWarningResult
+} from '@/services/dicomSender'
 import { toast } from 'vue-sonner'
 import { getAnonymizationWorkerManager } from '@/workers/workerManager'
 import { StudyLogger } from '@/services/studyLogger'
@@ -44,7 +50,7 @@ export function useAppState(runtime: RuntimeType) {
 
   // Progress and UI state management
   const { setStudyProgress, removeStudyProgress, clearAllProgress } = useAnonymizationProgress()
-  const { setStudySendingProgress, removeStudySendingProgress, clearAllSendingProgress } = useSendingProgress()
+  const { getStudySendingProgress, setStudySendingProgress, removeStudySendingProgress, clearAllSendingProgress } = useSendingProgress()
   const { getSelectedStudies, clearSelection } = useTableState()
 
   const totalFiles = computed(() => dicomFiles.value.length)
@@ -61,6 +67,32 @@ export function useAppState(runtime: RuntimeType) {
   const clearAppError = () => {
     appError.value = null
   }
+
+  const summarizeFailureKinds = (failures: SendFailureResult[]): string =>
+    Object.entries(
+      failures.reduce<Record<string, number>>((acc, failure) => {
+        acc[failure.failureKind] = (acc[failure.failureKind] || 0) + 1
+        return acc
+      }, {})
+    )
+      .map(([kind, count]) => `${kind}: ${count}`)
+      .join(', ')
+
+  const summarizeFailedFiles = (failures: SendFailureResult[], limit = 5): string[] =>
+    failures.slice(0, limit).map((failure) => failure.fileName)
+
+  const getFinalSendStatusText = (result: SendStudyResult): string => {
+    if (result.failedCount === 0) {
+      return `Sent ${result.succeededCount}/${result.attempted} file(s)`
+    }
+    if (result.succeededCount === 0) {
+      return `Failed ${result.failedCount}/${result.attempted} file(s)`
+    }
+    return `Partial: ${result.succeededCount} sent, ${result.failedCount} failed`
+  }
+
+  const getFinalSendProgress = (result: SendStudyResult): number =>
+    result.attempted > 0 ? Math.round(((result.succeededCount + result.failedCount) / result.attempted) * 100) : 0
 
   const groupAsSamePatient = async (): Promise<void> => {
     const selected = selectedStudies.value
@@ -536,7 +568,12 @@ export function useAppState(runtime: RuntimeType) {
             isProcessing: true,
             progress: 0,
             totalFiles: studyFiles.length,
-            currentFile: undefined
+            sentCount: 0,
+            failedCount: 0,
+            currentFile: undefined,
+            retryingFile: undefined,
+            retryAttempt: undefined,
+            statusText: 'Waiting for first file'
           })
         }
 
@@ -583,12 +620,17 @@ export function useAppState(runtime: RuntimeType) {
           studyFiles,
           concurrency.value,
           {
-            onProgress: (completed, total, current) => {
+            onProgress: (progress: SendProgressUpdate) => {
               setStudySendingProgress(study.studyInstanceUID, {
                 isProcessing: true,
-                progress: Math.round((completed / total) * 100),
-                totalFiles: total,
-                currentFile: current?.fileName
+                progress: progress.percentage,
+                totalFiles: progress.total,
+                sentCount: progress.sentCount,
+                failedCount: progress.failedCount,
+                currentFile: progress.currentFile?.fileName,
+                retryingFile: progress.retryingFile?.fileName,
+                retryAttempt: progress.retryAttempt,
+                statusText: progress.statusText
               })
             },
             onSkip: (file, reason) => {
@@ -598,58 +640,196 @@ export function useAppState(runtime: RuntimeType) {
                   yield* logger.append(study.id, { ts: Date.now(), level: 'warn', message: `Skipped file ${reason}`, details: { fileName: file.fileName, id: file.id } })
                 })
               )
+            },
+            onFileRetry: (failure, nextAttempt, delayMs) => {
+              return runtime.runPromise(
+                Effect.gen(function* () {
+                  const logger = yield* StudyLogger
+                  yield* logger.append(study.id, {
+                    ts: Date.now(),
+                    level: 'warn',
+                    message: `Retrying file send`,
+                    details: {
+                      fileName: failure.fileName,
+                      attemptsSoFar: failure.attempts,
+                      nextAttempt,
+                      delayMs,
+                      failureKind: failure.failureKind,
+                      httpStatus: failure.httpStatus,
+                      message: failure.message
+                    }
+                  })
+                })
+              )
+            },
+            onFileFailure: (failure) => {
+              return runtime.runPromise(
+                Effect.gen(function* () {
+                  const logger = yield* StudyLogger
+                  yield* logger.append(study.id, {
+                    ts: Date.now(),
+                    level: 'error',
+                    message: `File send failed`,
+                    details: failure
+                  })
+                })
+              )
+            },
+            onFileWarning: (warning: SendWarningResult) => {
+              return runtime.runPromise(
+                Effect.gen(function* () {
+                  const logger = yield* StudyLogger
+                  yield* logger.append(study.id, {
+                    ts: Date.now(),
+                    level: 'warn',
+                    message: `Server warning for sent file`,
+                    details: warning
+                  })
+                })
+              )
             }
           }
         ).pipe(
-          Effect.tap((sentFiles) =>
+          Effect.tap((sendResult) =>
             Effect.gen(function* () {
               // Mark files as sent
-              sentFiles.forEach(sentFile => {
+              sendResult.succeeded.forEach(({ file: sentFile }) => {
                 const fileIndex = dicomFiles.value.findIndex(f => f.id === sentFile.id)
                 if (fileIndex !== -1) {
                   dicomFiles.value[fileIndex] = { ...dicomFiles.value[fileIndex], sent: true }
                 }
               })
 
-              yield* Effect.tryPromise({
-                try: () => rebuildStudyAfterFileChanges(study.studyInstanceUID),
-                catch: (error) => new Error(String(error))
-              })
+              if (sendResult.succeeded.length > 0) {
+                yield* Effect.tryPromise({
+                  try: () => rebuildStudyAfterFileChanges(study.studyInstanceUID),
+                  catch: (error) => new Error(String(error))
+                })
+              }
 
               const logger = yield* StudyLogger
-              yield* logger.append(study.id, { ts: Date.now(), level: 'info', message: `Sent ${sentFiles.length} file(s)` })
+              yield* logger.append(study.id, {
+                ts: Date.now(),
+                level: sendResult.failedCount > 0 ? 'warn' : 'info',
+                message: `Send completed`,
+                details: {
+                  attempted: sendResult.attempted,
+                  sent: sendResult.succeededCount,
+                  failed: sendResult.failedCount,
+                  skipped: sendResult.skippedCount,
+                  warnings: sendResult.warningCount,
+                  failureKinds: summarizeFailureKinds(sendResult.failed),
+                  failedFiles: summarizeFailedFiles(sendResult.failed)
+                }
+              })
+
+              setStudySendingProgress(study.studyInstanceUID, {
+                isProcessing: false,
+                progress: getFinalSendProgress(sendResult),
+                totalFiles: sendResult.attempted,
+                sentCount: sendResult.succeededCount,
+                failedCount: sendResult.failedCount,
+                currentFile: undefined,
+                retryingFile: undefined,
+                retryAttempt: undefined,
+                statusText: getFinalSendStatusText(sendResult),
+                lastFailureKind: sendResult.failed[0]?.failureKind,
+                lastFailedFile: sendResult.failed[0]?.fileName
+              })
+
+              if (sendResult.failedCount > 0) {
+                toast.error(
+                  sendResult.succeededCount > 0 ? 'Some files failed to send' : 'Study send failed',
+                  {
+                    description: `${sendResult.failedCount} file(s) failed to send. More info is available in the logs.`,
+                    duration: 12000
+                  }
+                )
+              }
 
               // afterSend hooks
-              const registry = yield* PluginRegistry
-              const hookPlugins = yield* registry.getHookPlugins()
-              const sentStudy = studies.value.find(s => s.studyInstanceUID === study.studyInstanceUID)
-              if (sentStudy) {
-                for (const plugin of hookPlugins) {
-                  if (plugin.hooks.afterSend) {
-                    yield* plugin.hooks.afterSend(sentStudy).pipe(
-                      Effect.catchAll((error) => {
-                        console.error(`Plugin ${plugin.id} afterSend hook failed:`, error)
-                        const message = (error && (error as any).message) ? String((error as any).message) : String(error)
-                        const pluginId = (error && (error as any).pluginId) ? String((error as any).pluginId) : plugin.id
-                        toast.error(`Plugin ${pluginId} afterSend error`, { description: message })
-                        return Effect.gen(function* () {
-                          const logger = yield* StudyLogger
-                          yield* logger.append(study.id, { ts: Date.now(), level: 'error', message: `Plugin ${pluginId} afterSend error`, details: serializeError(error) })
-                          return undefined
+              if (sendResult.failedCount === 0) {
+                const registry = yield* PluginRegistry
+                const hookPlugins = yield* registry.getHookPlugins()
+                const sentStudy = studies.value.find(s => s.studyInstanceUID === study.studyInstanceUID)
+                if (sentStudy) {
+                  for (const plugin of hookPlugins) {
+                    if (plugin.hooks.afterSend) {
+                      yield* plugin.hooks.afterSend(sentStudy).pipe(
+                        Effect.catchAll((error) => {
+                          console.error(`Plugin ${plugin.id} afterSend hook failed:`, error)
+                          const message = (error && (error as any).message) ? String((error as any).message) : String(error)
+                          const pluginId = (error && (error as any).pluginId) ? String((error as any).pluginId) : plugin.id
+                          toast.error(`Plugin ${pluginId} afterSend error`, { description: message })
+                          return Effect.gen(function* () {
+                            const logger = yield* StudyLogger
+                            yield* logger.append(study.id, { ts: Date.now(), level: 'error', message: `Plugin ${pluginId} afterSend error`, details: serializeError(error) })
+                            return undefined
+                          })
                         })
-                      })
-                    )
+                      )
+                    }
                   }
                 }
               }
-
-              removeStudySendingProgress(study.studyInstanceUID)
             })
           ),
           Effect.catchAll((err) =>
             Effect.gen(function* () {
+              if (err instanceof CancelledError) {
+                const currentProgress = getStudySendingProgress(study.studyInstanceUID).value
+                setStudySendingProgress(study.studyInstanceUID, {
+                  isProcessing: false,
+                  progress: currentProgress?.progress ?? 0,
+                  totalFiles: studyFiles.length,
+                  sentCount: currentProgress?.sentCount ?? 0,
+                  failedCount: currentProgress?.failedCount ?? 0,
+                  currentFile: undefined,
+                  retryingFile: undefined,
+                  retryAttempt: undefined,
+                  statusText: 'Send cancelled',
+                  lastFailureKind: currentProgress?.lastFailureKind,
+                  lastFailedFile: currentProgress?.lastFailedFile
+                })
+                const logger = yield* StudyLogger
+                yield* logger.append(study.id, {
+                  ts: Date.now(),
+                  level: 'warn',
+                  message: 'Sending cancelled'
+                })
+                return {
+                  succeeded: [],
+                  failed: [],
+                  skipped: [],
+                  warnings: [],
+                  total: studyFiles.length,
+                  attempted: currentProgress?.sentCount ?? 0,
+                  succeededCount: currentProgress?.sentCount ?? 0,
+                  failedCount: currentProgress?.failedCount ?? 0,
+                  skippedCount: 0,
+                  warningCount: 0
+                } satisfies SendStudyResult
+              }
+
               console.error(`Error sending study ${study.studyInstanceUID}:`, err)
-              removeStudySendingProgress(study.studyInstanceUID)
+              setStudySendingProgress(study.studyInstanceUID, {
+                isProcessing: false,
+                progress: 0,
+                totalFiles: studyFiles.length,
+                sentCount: 0,
+                failedCount: studyFiles.length,
+                currentFile: undefined,
+                retryingFile: undefined,
+                retryAttempt: undefined,
+                statusText: 'Send failed',
+                lastFailureKind: 'error'
+              })
+              if (studyFiles.length > 0) {
+                toast.error('Study send failed', {
+                  description: `${studyFiles.length} file(s) failed to send. More info is available in the logs.`,
+                  duration: 12000
+                })
+              }
               const logger = yield* StudyLogger
               yield* logger.append(study.id, { ts: Date.now(), level: 'error', message: `Send error`, details: serializeError(err) })
               // onSendError hooks
@@ -675,7 +855,31 @@ export function useAppState(runtime: RuntimeType) {
                   }
                 }
               }
-              return Effect.succeed(false)
+
+              const syntheticFailures: SendFailureResult[] = studyFiles.map((file) => ({
+                file,
+                fileName: file.fileName,
+                id: file.id,
+                sopInstanceUID: file.metadata?.sopInstanceUID,
+                modality: file.metadata?.modality,
+                fileSize: file.fileSize,
+                attempts: 1,
+                failureKind: 'network',
+                message: err instanceof Error ? err.message : String(err)
+              }))
+
+              return {
+                succeeded: [],
+                failed: syntheticFailures,
+                skipped: [],
+                warnings: [],
+                total: studyFiles.length,
+                attempted: studyFiles.length,
+                succeededCount: 0,
+                failedCount: studyFiles.length,
+                skippedCount: 0,
+                warningCount: 0
+              } satisfies SendStudyResult
             })
           )
         )
@@ -691,15 +895,25 @@ export function useAppState(runtime: RuntimeType) {
       // Track successful and failed studies
       const failedStudies: string[] = []
       const successfulStudies: string[] = []
+      const partialStudies: string[] = []
+      const cancelledStudies: string[] = []
 
       // Run all study effects concurrently with result tracking
       await runtime.runPromise(
         Effect.all(studyEffects.map((effect, index) =>
           effect.pipe(
-            Effect.map(() => {
+            Effect.map((result) => {
               const currentStudy = studiesForRun[index]
               if (currentStudy) {
-                successfulStudies.push(currentStudy.studyInstanceUID)
+                if ((getStudySendingProgress(currentStudy.studyInstanceUID).value?.statusText) === 'Send cancelled') {
+                  cancelledStudies.push(currentStudy.studyInstanceUID)
+                } else if (result.failedCount === 0) {
+                  successfulStudies.push(currentStudy.studyInstanceUID)
+                } else if (result.succeededCount > 0) {
+                  partialStudies.push(currentStudy.studyInstanceUID)
+                } else {
+                  failedStudies.push(currentStudy.studyInstanceUID)
+                }
               }
               return true
             }),
@@ -715,12 +929,14 @@ export function useAppState(runtime: RuntimeType) {
       )
 
       // Show appropriate success/error message based on results
-      if (failedStudies.length === 0) {
+      if (failedStudies.length === 0 && partialStudies.length === 0 && cancelledStudies.length === 0) {
         successMessage.value = `Successfully sent ${successfulStudies.length} studies`
-      } else if (successfulStudies.length === 0) {
+      } else if (successfulStudies.length === 0 && partialStudies.length === 0 && cancelledStudies.length === 0) {
         setAppError(new Error(`Failed to send all ${failedStudies.length} studies`))
+      } else if (successfulStudies.length === 0 && partialStudies.length === 0 && failedStudies.length === 0 && cancelledStudies.length > 0) {
+        successMessage.value = `Stopped sending ${cancelledStudies.length} ${cancelledStudies.length === 1 ? 'study' : 'studies'}`
       } else {
-        successMessage.value = `Sent ${successfulStudies.length} of ${studiesForRun.length} studies. ${failedStudies.length} failed.`
+        successMessage.value = `Sent ${successfulStudies.length} complete, ${partialStudies.length} partial, ${failedStudies.length} failed studies.${cancelledStudies.length > 0 ? ` ${cancelledStudies.length} cancelled.` : ''}`
       }
 
     } catch (error) {
@@ -885,6 +1101,10 @@ export function useAppState(runtime: RuntimeType) {
     return anonymizedFiles.every(f => f.sent === true)
   }
 
+  const cancelStudySend = (studyId: string): void => {
+    dicomSender.cancelStudy(studyId)
+  }
+
   return {
     // State
     uploadedFiles,
@@ -929,6 +1149,7 @@ export function useAppState(runtime: RuntimeType) {
     mergeSelectedStudiesIntoOne,
     testConnection,
     handleSendSelected,
+    cancelStudySend,
     clearFiles,
     clearSelected,
     // Helpers
