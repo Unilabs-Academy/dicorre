@@ -58,7 +58,8 @@ describe('StudyProgressIndicator', () => {
       }
     })
 
-    expect(wrapper.text()).toContain('Processing...')
+    expect(wrapper.text()).toContain('Sending...')
+    expect(wrapper.text()).toContain('45%')
     expect(wrapper.text()).not.toContain('5/10')
     expect(wrapper.text()).not.toContain('Retry 1/2 for report.sr')
     expect(wrapper.text()).not.toContain('report.sr')

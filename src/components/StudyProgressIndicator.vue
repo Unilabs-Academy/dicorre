@@ -109,7 +109,8 @@ const status = computed<IndicatorStatus>(() => {
     if (sending?.isProcessing) {
       return {
         showProgress: true,
-        label: 'Processing...',
+        text: `${Math.round(sending.progress || 0)}%`,
+        label: 'Sending...',
         variant: 'secondary' as const
       }
     }
@@ -199,7 +200,8 @@ const status = computed<IndicatorStatus>(() => {
   if (sending?.isProcessing) {
     return {
       showProgress: true,
-      label: 'Processing...',
+      text: `${Math.round(sending.progress || 0)}%`,
+      label: 'Sending...',
       variant: 'secondary' as const
     }
   }
