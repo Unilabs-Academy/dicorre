@@ -62,6 +62,28 @@ describe('DicomProcessor Service (Effect Service Testing)', () => {
       
       expect(result).toHaveLength(0)
     })
+
+    it('should continue parsing when one file is invalid', async () => {
+      const files = [
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),
+        {
+          id: 'invalid-test',
+          fileName: 'invalid.dcm',
+          fileSize: 50,
+          arrayBuffer: new ArrayBuffer(50),
+          anonymized: false
+        } satisfies DicomFile
+      ]
+
+      const result = await runTest(Effect.gen(function* () {
+        const processor = yield* DicomProcessor
+        return yield* processor.parseFiles(files, 2)
+      }))
+
+      expect(result).toHaveLength(1)
+      expect(result[0].fileName).toBe('EE0BF3EC')
+      expect(result[0].metadata).toBeDefined()
+    })
   })
 
   describe('File validation', () => {

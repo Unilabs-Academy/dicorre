@@ -1,5 +1,6 @@
 import { Effect, Context, Layer } from 'effect'
 import { BlobReader, ZipReader } from '@zip.js/zip.js'
+import * as dcmjs from 'dcmjs'
 import type { DicomFile, DicomMetadata } from '@/types/dicom'
 import { FileHandlerError, ValidationError, type FileHandlerErrorType } from '@/types/effects'
 import { PluginRegistry } from '@/services/pluginRegistry'
@@ -27,6 +28,57 @@ export const FileHandlerLive = Layer.effect(
   FileHandler,
   Effect.gen(function* () {
     const registry = yield* PluginRegistry
+    const ZIP_ENTRY_SKIP_EXTENSIONS = new Set([
+      '.7z',
+      '.bat',
+      '.bmp',
+      '.cfg',
+      '.chk',
+      '.chm',
+      '.cmd',
+      '.com',
+      '.css',
+      '.csv',
+      '.def',
+      '.dll',
+      '.doc',
+      '.docx',
+      '.exe',
+      '.gif',
+      '.htm',
+      '.html',
+      '.inf',
+      '.ini',
+      '.jpeg',
+      '.jpg',
+      '.js',
+      '.json',
+      '.log',
+      '.md',
+      '.msg',
+      '.msi',
+      '.pdf',
+      '.png',
+      '.ppt',
+      '.pptx',
+      '.rtf',
+      '.sh',
+      '.svg',
+      '.tar',
+      '.tif',
+      '.tiff',
+      '.tmp',
+      '.txt',
+      '.xls',
+      '.xlsx',
+      '.xml',
+      '.zip',
+    ])
+    const SYSTEM_FILE_PATTERNS = ['.ds_store', 'thumbs.db', 'desktop.ini', '.git', '.svn']
+    const REQUIRED_DICOM_IDENTITY_TAGS = ['0020000D', '0020000E', '00080018'] as const
+
+    type DicomDictEntry = { Value?: unknown[] }
+    type DicomDict = Record<string, DicomDictEntry>
 
     const generateFileId = (): string => {
       return `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
@@ -52,6 +104,86 @@ export const FileHandlerLive = Layer.effect(
       }
     }
 
+    const getFileExtension = (fileName: string): string => {
+      const normalized = fileName.split('/').pop() || fileName
+      const index = normalized.lastIndexOf('.')
+      return index >= 0 ? normalized.slice(index).toLowerCase() : ''
+    }
+
+    const isSystemFile = (fileName: string): boolean => {
+      const lowerFileName = fileName.toLowerCase()
+      return SYSTEM_FILE_PATTERNS.some((sysFile) => lowerFileName.includes(sysFile))
+    }
+
+    const hasPart10Header = (arrayBuffer: ArrayBuffer): boolean => {
+      if (arrayBuffer.byteLength < 132) {
+        return false
+      }
+
+      const view = new DataView(arrayBuffer)
+      const magic = String.fromCharCode(
+        view.getUint8(128),
+        view.getUint8(129),
+        view.getUint8(130),
+        view.getUint8(131),
+      )
+
+      return magic === 'DICM'
+    }
+
+    const detectObviousNonDicomSignature = (arrayBuffer: ArrayBuffer): string | null => {
+      if (arrayBuffer.byteLength < 4) {
+        return null
+      }
+
+      const bytes = new Uint8Array(arrayBuffer)
+
+      if (bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+        return 'ZIP archive'
+      }
+
+      if (bytes[0] === 0x4d && bytes[1] === 0x5a) {
+        return 'Windows executable'
+      }
+
+      if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+        return 'GIF image'
+      }
+
+      if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+        return 'PNG image'
+      }
+
+      if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+        return 'JPEG image'
+      }
+
+      if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
+        return 'PDF document'
+      }
+
+      return null
+    }
+
+    const hasRequiredDicomIdentity = (dict: DicomDict): boolean =>
+      REQUIRED_DICOM_IDENTITY_TAGS.every((tag) => {
+        const value = dict[tag]?.Value?.[0]
+        return typeof value === 'string' && value.trim().length > 0
+      })
+
+    const shouldSkipZipEntryByName = (fileName: string): string | null => {
+      if (isSystemFile(fileName)) {
+        return 'system file'
+      }
+
+      const extension = getFileExtension(fileName)
+      if (extension && ZIP_ENTRY_SKIP_EXTENSIONS.has(extension)) {
+        return `unsupported ${extension} archive entry`
+      }
+
+      return null
+    }
+
     const validateDicomFile = (
       arrayBuffer: ArrayBuffer,
       fileName: string,
@@ -66,55 +198,7 @@ export const FileHandlerLive = Layer.effect(
           )
         }
 
-        const view = new DataView(arrayBuffer)
-
-        // Method 1: Check for DICOM magic number "DICM" at position 128
-        if (arrayBuffer.byteLength > 132) {
-          try {
-            const magic = String.fromCharCode(
-              view.getUint8(128),
-              view.getUint8(129),
-              view.getUint8(130),
-              view.getUint8(131),
-            )
-
-            if (magic === 'DICM') {
-              return true
-            }
-          } catch (error) {
-            return yield* Effect.fail(
-              new ValidationError({
-                message: `Error reading DICOM magic number in ${fileName} - ${error}`,
-                fileName,
-              }),
-            )
-          }
-        }
-
-        // Method 2: Look for Group 0002 (File Meta Information) tags at the start
-        try {
-          // Check for group 0002 elements which should be present in DICOM files
-          for (let i = 128; i < Math.min(arrayBuffer.byteLength - 8, 1000); i += 2) {
-            const group = view.getUint16(i, true) // little endian
-            const element = view.getUint16(i + 2, true)
-
-            // Check for common Group 0002 elements
-            if (group === 0x0002) {
-              console.log(
-                `Found DICOM Group 0002 tag at position ${i}: (${group.toString(16).padStart(4, '0')},${element.toString(16).padStart(4, '0')})`,
-              )
-              return true
-            }
-          }
-        } catch (error) {
-          console.warn(`Error checking for DICOM tags in ${fileName}:`, error)
-          // Continue to fallback method
-        }
-
-        // Method 3: Check for common system files that should not be treated as DICOM
-        const lowerFileName = fileName.toLowerCase()
-        const systemFiles = ['.ds_store', 'thumbs.db', 'desktop.ini', '.git', '.svn']
-        if (systemFiles.some((sysFile) => lowerFileName.includes(sysFile))) {
+        if (isSystemFile(fileName)) {
           return yield* Effect.fail(
             new ValidationError({
               message: `File ${fileName} is a system file, not a DICOM file`,
@@ -123,18 +207,35 @@ export const FileHandlerLive = Layer.effect(
           )
         }
 
-        // Method 4: Fallback - assume it's DICOM if it has reasonable size and no clear non-DICOM markers
-        if (arrayBuffer.byteLength > 1000) {
-          console.log(`Assuming ${fileName} is DICOM based on size and lack of non-DICOM markers`)
-          return true
+        if (!hasPart10Header(arrayBuffer)) {
+          return yield* Effect.fail(
+            new ValidationError({
+              message: `File ${fileName} does not have a valid DICOM Part 10 header`,
+              fileName,
+            }),
+          )
         }
 
-        return yield* Effect.fail(
-          new ValidationError({
-            message: `File ${fileName} is not a valid DICOM file`,
-            fileName,
-          }),
-        )
+        const dict = yield* Effect.try({
+          try: () => dcmjs.data.DicomMessage.readFile(arrayBuffer).dict as DicomDict,
+          catch: (error) =>
+            new ValidationError({
+              message: `File ${fileName} could not be parsed as DICOM: ${error}`,
+              fileName,
+              cause: error,
+            }),
+        })
+
+        if (!hasRequiredDicomIdentity(dict)) {
+          return yield* Effect.fail(
+            new ValidationError({
+              message: `File ${fileName} is missing required DICOM identity tags`,
+              fileName,
+            }),
+          )
+        }
+
+        return true
       })
 
     const readSingleDicomFile = (file: File): Effect.Effect<DicomFile, FileHandlerErrorType> =>
@@ -202,10 +303,21 @@ export const FileHandlerLive = Layer.effect(
         const dicomFiles: DicomFile[] = []
         let completed = 0
         const total = entries.length
+        let skippedObvious = 0
+        let skippedAmbiguous = 0
+        let skippedInvalid = 0
 
         // Process each entry - zip.js extracts one file at a time without loading the whole ZIP
         for (let i = 0; i < entries.length; i++) {
           const entry = entries[i]
+
+          const skipReason = shouldSkipZipEntryByName(entry.filename)
+          if (skipReason) {
+            skippedObvious++
+            completed++
+            options?.onProgress?.(completed, total, entry.filename)
+            continue
+          }
 
           const fileBuffer = yield* Effect.tryPromise({
             try: () => entry.arrayBuffer(),
@@ -217,9 +329,26 @@ export const FileHandlerLive = Layer.effect(
               }),
           })
 
+          const signatureReason = detectObviousNonDicomSignature(fileBuffer)
+          if (signatureReason) {
+            skippedObvious++
+            completed++
+            options?.onProgress?.(completed, total, entry.filename)
+            continue
+          }
+
           // Check if it's a DICOM file
           const isDicom = yield* validateDicomFile(fileBuffer, entry.filename).pipe(
-            Effect.catchAll(() => Effect.succeed(false)),
+            Effect.catchAll((error) =>
+              Effect.sync(() => {
+                if (error.message.includes('missing required DICOM identity tags')) {
+                  skippedAmbiguous++
+                } else {
+                  skippedInvalid++
+                }
+                return false
+              }),
+            ),
           )
 
           if (isDicom) {
@@ -238,7 +367,10 @@ export const FileHandlerLive = Layer.effect(
           options?.onProgress?.(completed, total, entry.filename)
         }
 
-        console.log(`Extracted ${dicomFiles.length} DICOM files from ${entries.length} total files`)
+        console.log(
+          `Extracted ${dicomFiles.length} DICOM files from ${entries.length} total files ` +
+            `(skipped obvious=${skippedObvious}, ambiguous=${skippedAmbiguous}, invalid=${skippedInvalid})`,
+        )
 
         if (dicomFiles.length === 0) {
           return yield* Effect.fail(

@@ -125,18 +125,27 @@ export const DicomProcessorLive = Layer.succeed(
         // Create parsing effects with progress tracking
         const parsingEffects = files.map(file =>
           parseFile(file).pipe(
-            Effect.tap(parsedFile =>
-              Effect.sync(() => {
-                completed++
-                options?.onProgress?.(completed, total, parsedFile)
-              })
-            )
+            Effect.matchEffect({
+              onFailure: (error) =>
+                Effect.sync(() => {
+                  completed++
+                  options?.onProgress?.(completed, total, file)
+                  console.warn(`Skipping unparseable DICOM file ${file.fileName}:`, error)
+                  return undefined
+                }),
+              onSuccess: (parsedFile) =>
+                Effect.sync(() => {
+                  completed++
+                  options?.onProgress?.(completed, total, parsedFile)
+                  return parsedFile
+                })
+            })
           )
         )
 
         const results = yield* Effect.all(parsingEffects, { concurrency, batching: true })
 
-        const successfulResults = results.filter(file => file.parsed)
+        const successfulResults = results.filter((file): file is DicomFile => !!file?.parsed)
         console.log(`Successfully parsed ${successfulResults.length}/${files.length} DICOM files`)
 
         return successfulResults
