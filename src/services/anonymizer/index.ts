@@ -95,9 +95,29 @@ export interface StudyAnonymizationResult {
   completedFiles: number
 }
 
+export interface StudyAnonymizationContext {
+  studyId: string
+  config: AnonymizationConfig
+  sharedRandom: string
+  patientIdMap?: Record<string, string>
+  overrides?: Record<string, string>
+}
+
+export interface StudyAnonymizationOptions {
+  concurrency?: number
+  onProgress?: (progress: AnonymizationProgress) => void
+  patientIdMap?: Record<string, string>
+  overrides?: Record<string, string>
+}
+
 export class Anonymizer extends Context.Tag('Anonymizer')<
   Anonymizer,
   {
+    readonly createStudyContext: (
+      studyId: string,
+      config: AnonymizationConfig,
+      options?: Pick<StudyAnonymizationOptions, 'patientIdMap' | 'overrides'>,
+    ) => StudyAnonymizationContext
     readonly anonymizeFile: (
       file: DicomFile,
       config: AnonymizationConfig,
@@ -105,16 +125,15 @@ export class Anonymizer extends Context.Tag('Anonymizer')<
       patientIdMap?: Record<string, string>,
       overrides?: Record<string, string>,
     ) => Effect.Effect<DicomFile, AnonymizerError>
+    readonly anonymizeFileInStudyContext: (
+      file: DicomFile,
+      context: StudyAnonymizationContext,
+    ) => Effect.Effect<DicomFile, AnonymizerError>
     readonly anonymizeStudy: (
       studyId: string,
       files: DicomFile[],
       config: AnonymizationConfig,
-      options?: {
-        concurrency?: number
-        onProgress?: (progress: AnonymizationProgress) => void
-        patientIdMap?: Record<string, string>
-        overrides?: Record<string, string>
-      },
+      options?: StudyAnonymizationOptions,
     ) => Effect.Effect<StudyAnonymizationResult, AnonymizerError>
   }
 >() {}
@@ -147,6 +166,23 @@ export const AnonymizerLive = Layer.effect(
       }
 
       return processed
+    }
+
+    const createStudyContext = (
+      studyId: string,
+      config: AnonymizationConfig,
+      options: Pick<StudyAnonymizationOptions, 'patientIdMap' | 'overrides'> = {},
+    ): StudyAnonymizationContext => {
+      const sharedRandom = generateRandomString()
+      console.log(`[Effect Anonymizer] Using shared random string for study ${studyId}: ${sharedRandom}`)
+
+      return {
+        studyId,
+        config,
+        sharedRandom,
+        patientIdMap: options.patientIdMap,
+        overrides: options.overrides,
+      }
     }
 
     const anonymizeFile = (
@@ -350,30 +386,35 @@ export const AnonymizerLive = Layer.effect(
         return finalFile
       })
 
+    const anonymizeFileInStudyContext = (
+      file: DicomFile,
+      context: StudyAnonymizationContext,
+    ): Effect.Effect<DicomFile, AnonymizerError> =>
+      anonymizeFile(
+        file,
+        context.config,
+        context.sharedRandom,
+        context.patientIdMap,
+        context.overrides,
+      )
+
     const anonymizeStudy = (
       studyId: string,
       files: DicomFile[],
       config: AnonymizationConfig,
-      options: {
-        concurrency?: number
-        onProgress?: (progress: AnonymizationProgress) => void
-        patientIdMap?: Record<string, string>
-        overrides?: Record<string, string>
-      } = {},
+      options: StudyAnonymizationOptions = {},
     ): Effect.Effect<StudyAnonymizationResult, AnonymizerError> =>
       Effect.gen(function* () {
         const { concurrency = 3, onProgress } = options
-        const patientIdMap = options.patientIdMap
 
         console.log(
           `[Effect Anonymizer] Starting anonymization of study ${studyId} with ${files.length} files`,
         )
 
-        // Generate shared random string for consistent replacements across all files in this study
-        const sharedRandom = generateRandomString()
-        console.log(
-          `[Effect Anonymizer] Using shared random string for study ${studyId}: ${sharedRandom}`,
-        )
+        const context = createStudyContext(studyId, config, {
+          patientIdMap: options.patientIdMap,
+          overrides: options.overrides,
+        })
 
         let completed = 0
         const total = files.length
@@ -393,14 +434,7 @@ export const AnonymizerLive = Layer.effect(
 
             console.log(`[Effect Anonymizer] Starting file ${index + 1}/${total}: ${file.fileName}`)
 
-            // Anonymize individual file with shared random string
-            const result = yield* anonymizeFile(
-              file,
-              config,
-              sharedRandom,
-              patientIdMap,
-              options.overrides,
-            )
+            const result = yield* anonymizeFileInStudyContext(file, context)
 
             completed++
 
@@ -440,7 +474,9 @@ export const AnonymizerLive = Layer.effect(
       })
 
     return {
+      createStudyContext,
       anonymizeFile,
+      anonymizeFileInStudyContext,
       anonymizeStudy,
     } as const
   }),

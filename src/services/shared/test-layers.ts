@@ -230,7 +230,15 @@ export const TestOPFSStorageLayer = Layer.succeed(
 export const TestAnonymizerLayer = Layer.succeed(
   Anonymizer,
   {
-    anonymizeFile: (file: DicomFile, _sharedRandom?) =>
+    createStudyContext: (studyId, config, options = {}) => ({
+      studyId,
+      config,
+      sharedRandom: 'TESTCTX',
+      patientIdMap: options.patientIdMap,
+      overrides: options.overrides,
+    }),
+
+    anonymizeFile: (file: DicomFile, _config) =>
       Effect.succeed({
         ...file,
         anonymized: true,
@@ -242,7 +250,19 @@ export const TestAnonymizerLayer = Layer.succeed(
         } : undefined
       } as DicomFile),
 
-    anonymizeStudy: (studyId, files, _options?) =>
+    anonymizeFileInStudyContext: (file: DicomFile) =>
+      Effect.succeed({
+        ...file,
+        anonymized: true,
+        metadata: file.metadata ? {
+          ...file.metadata,
+          patientName: 'TEST_ANONYMOUS',
+          patientId: 'TEST_ID',
+          accessionNumber: 'TEST_ACC'
+        } : undefined
+      } as DicomFile),
+
+    anonymizeStudy: (studyId, files) =>
       Effect.succeed({
         studyId,
         anonymizedFiles: files.map(f => ({ ...f, anonymized: true })),

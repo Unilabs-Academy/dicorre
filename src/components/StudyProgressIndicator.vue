@@ -40,6 +40,12 @@ const REAL_FAILURE_MESSAGES = new Set([
   'Send error',
   'No anonymized files to send; aborted'
 ])
+const ANONYMIZATION_FAILURE_MESSAGES = new Set(['Anonymization error'])
+const SENDING_FAILURE_MESSAGES = new Set([
+  'File send failed',
+  'Send error',
+  'No anonymized files to send; aborted'
+])
 
 onMounted(() => {
   void getLogs(props.studyId)
@@ -65,12 +71,23 @@ const summarizeFailure = (entry: StudyLogEntry): string => {
   }
 }
 
+const visibleFailureMessages = computed(() => {
+  if (props.showOnly === 'anonymization') return ANONYMIZATION_FAILURE_MESSAGES
+  if (props.showOnly === 'sending') return SENDING_FAILURE_MESSAGES
+  return REAL_FAILURE_MESSAGES
+})
+
 const failureEntries = computed(() =>
-  logEntries.value.filter((entry) => entry.level === 'error' && REAL_FAILURE_MESSAGES.has(entry.message))
+  logEntries.value.filter((entry) => entry.level === 'error' && visibleFailureMessages.value.has(entry.message))
 )
 
 const failureSummaryLines = computed(() => failureEntries.value.slice(0, 5).map(summarizeFailure))
-const failureCount = computed(() => Math.max(failureEntries.value.length, sendingProgressInfo.value?.failedCount || 0))
+const failureCount = computed(() => {
+  if (props.showOnly === 'sending') {
+    return Math.max(failureEntries.value.length, sendingProgressInfo.value?.failedCount || 0)
+  }
+  return failureEntries.value.length
+})
 
 const failureTooltipText = computed(() => {
   if (failureCount.value === 0) return ''
@@ -86,7 +103,7 @@ const failureTooltipText = computed(() => {
   return [heading, ...failureSummaryLines.value, extraLine, 'More info is available in the logs.'].filter(Boolean).join('\n')
 })
 
-const showFailureIndicator = computed(() => props.showOnly === 'sending' && failureCount.value > 0)
+const showFailureIndicator = computed(() => failureCount.value > 0)
 const showStopButton = computed(() => props.showOnly === 'sending' && !!sendingProgressInfo.value?.isProcessing && !!studyActions.cancelStudySend)
 
 const cancelSending = () => {

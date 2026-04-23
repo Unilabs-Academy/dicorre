@@ -111,6 +111,33 @@ describe('StudyProgressIndicator', () => {
     expect(wrapper.find('[aria-label="Show failure details"]').exists()).toBe(false)
   })
 
+  it('shows anonymization failures in the anonymization cell', () => {
+    mockLogs.value = {
+      'study-2b': [
+        {
+          ts: Date.now(),
+          level: 'error',
+          message: 'Anonymization error',
+          details: { message: 'Cannot anonymize file image.dcm: Array buffer allocation failed' }
+        }
+      ]
+    }
+
+    const wrapper = mount(StudyProgressIndicator, {
+      props: {
+        studyId: 'study-2b',
+        totalFiles: 100,
+        anonymizedFiles: 42,
+        showOnly: 'anonymization'
+      }
+    })
+
+    const indicator = wrapper.get('[aria-label="Show failure details"]')
+    expect(indicator.attributes('title')).toContain('1 failure')
+    expect(indicator.attributes('title')).toContain('Array buffer allocation failed')
+    expect(wrapper.text()).toContain('Partial')
+  })
+
   it('shows a failure indicator with hover text for real failures', () => {
     mockLogs.value = {
       'study-3': [

@@ -158,7 +158,16 @@ export class WorkerManager<T extends BaseJob> {
 
       case 'error':
         this.logDebug('error', `Error: ${data.message}`, workerTask.id, studyId)
-        job.onError?.(new Error(data.message))
+        {
+          const error = new Error(data.message)
+          if (data.stack) {
+            error.stack = data.stack
+          }
+          if (Array.isArray(data.anonymizedFiles)) {
+            ; (error as Error & { partialAnonymizedFiles?: DicomFile[] }).partialAnonymizedFiles = data.anonymizedFiles
+          }
+          job.onError?.(error)
+        }
         this.completeJob(workerTask)
         break
 
@@ -343,4 +352,3 @@ export function destroyWorkerManagers() {
     globalAnonymizationWorkerManager = null
   }
 }
-

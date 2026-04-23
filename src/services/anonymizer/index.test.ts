@@ -345,6 +345,39 @@ describe('Anonymizer Service (Effect Service Testing)', () => {
       expect(ids.every(id => id === 'PATFIXED123')).toBe(true)
     })
 
+    it('keeps patient ID mapping when anonymizing incrementally with a study context', async () => {
+      const files = [
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),
+      ]
+
+      const parsedFiles = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processor = yield* DicomProcessor
+          return yield* processor.parseFiles(files)
+        }).pipe(Effect.provide(DicomProcessorLive))
+      )
+
+      const originalId = parsedFiles[0].metadata?.patientId || 'Unknown'
+      const patientIdMap: Record<string, string> = { [originalId]: 'PATSTREAM1' }
+
+      const result = await runTest(Effect.gen(function* () {
+        const anonymizer = yield* Anonymizer
+        const configService = yield* ConfigService
+        const config = yield* configService.getAnonymizationConfig
+        const context = anonymizer.createStudyContext('stream-study-mapping', config, { patientIdMap })
+
+        const anonymized: DicomFile[] = []
+        for (const file of parsedFiles) {
+          anonymized.push(yield* anonymizer.anonymizeFileInStudyContext(file, context))
+        }
+        return anonymized
+      }))
+
+      expect(result).toHaveLength(2)
+      expect(result.every(file => file.metadata?.patientId === 'PATSTREAM1')).toBe(true)
+    })
+
     it('generates different core UIDs across runs when uidStrategy is perRun', async () => {
       const files = [
         loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC')

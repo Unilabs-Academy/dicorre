@@ -55,6 +55,8 @@ export function useAppState(runtime: RuntimeType) {
 
   const totalFiles = computed(() => dicomFiles.value.length)
   const anonymizedFilesCount = computed(() => dicomFiles.value.filter(file => file.anonymized).length)
+  const LARGE_STUDY_WARNING_BYTES = 3 * 1024 * 1024 * 1024
+  const VERY_LARGE_STUDY_WARNING_BYTES = 5 * 1024 * 1024 * 1024
 
   const selectedStudies = computed(() => getSelectedStudies(studies.value))
   const selectedStudiesCount = computed(() => selectedStudies.value.length)
@@ -93,6 +95,8 @@ export function useAppState(runtime: RuntimeType) {
 
   const getFinalSendProgress = (result: SendStudyResult): number =>
     result.attempted > 0 ? Math.round(((result.succeededCount + result.failedCount) / result.attempted) * 100) : 0
+
+  const formatGiB = (bytes: number): string => `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`
 
   const groupAsSamePatient = async (): Promise<void> => {
     const selected = selectedStudies.value
@@ -388,6 +392,22 @@ export function useAppState(runtime: RuntimeType) {
       const selectedSnapshot = selectedStudies.value.slice()
       clearSelection()
 
+      selectedSnapshot.forEach(study => {
+        const studyFiles = study.series.flatMap(series => series.files)
+        const totalSize = studyFiles.reduce((sum, file) => sum + (file.fileSize || 0), 0)
+        if (totalSize >= VERY_LARGE_STUDY_WARNING_BYTES) {
+          toast.warning('Very large study', {
+            description: `${formatGiB(totalSize)} will anonymize in low-memory mode. This may take significantly longer.`,
+            duration: 10000
+          })
+        } else if (totalSize >= LARGE_STUDY_WARNING_BYTES) {
+          toast.warning('Large study', {
+            description: `${formatGiB(totalSize)} will anonymize in low-memory mode to reduce memory pressure.`,
+            duration: 8000
+          })
+        }
+      })
+
       const anonymizationConfig = await runtime.runPromise(
         Effect.gen(function* () {
           const cfgService = yield* ConfigService
@@ -470,13 +490,35 @@ export function useAppState(runtime: RuntimeType) {
               resolve(true)
             },
             onError: (err) => {
+              const partialFiles = ((err as Error & { partialAnonymizedFiles?: DicomFile[] }).partialAnonymizedFiles ?? [])
+              if (partialFiles.length > 0) {
+                partialFiles.forEach(anonymizedFile => {
+                  const fileIndex = dicomFiles.value.findIndex(f => f.id === anonymizedFile.id)
+                  if (fileIndex !== -1) {
+                    dicomFiles.value[fileIndex] = anonymizedFile
+                  }
+                })
+                rebuildStudyAfterAnonymization(study.studyInstanceUID, partialFiles)
+              }
               runtime.runPromise(
                 Effect.gen(function* () {
                   const logger = yield* StudyLogger
-                  yield* logger.append(study.id, { ts: Date.now(), level: 'error', message: `Anonymization error`, details: serializeError(err) })
+                  yield* logger.append(study.id, {
+                    ts: Date.now(),
+                    level: 'error',
+                    message: `Anonymization error`,
+                    details: {
+                      ...serializeError(err),
+                      partialAnonymizedFiles: partialFiles.length
+                    }
+                  })
                 })
               ).catch(() => { })
               console.error(`Anonymization error for study ${study.studyInstanceUID}:`, err)
+              toast.error('Anonymization failed', {
+                description: err.message,
+                duration: 12000
+              })
               removeStudyProgress(study.studyInstanceUID)
               resolve(false)
             }
