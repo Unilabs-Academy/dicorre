@@ -122,7 +122,7 @@ export const PluginRegistryLive = Layer.succeed(
         const fileFormatPlugins = yield* getFileFormatPlugins()
         const allExtensions = fileFormatPlugins.flatMap(plugin => plugin.supportedExtensions)
         // Remove duplicates and sort
-        return [...new Set(['.zip', '.dcm', '.dicom', ...allExtensions])].sort()
+        return [...new Set(['.zip', '.rar', '.dcm', '.dicom', ...allExtensions])].sort()
       })
 
     const getSupportedMimeTypes = (): Effect.Effect<string[], never> =>
@@ -130,7 +130,7 @@ export const PluginRegistryLive = Layer.succeed(
         const fileFormatPlugins = yield* getFileFormatPlugins()
         const allMimeTypes = fileFormatPlugins.flatMap(plugin => plugin.supportedMimeTypes || [])
         // Remove duplicates and sort
-        return [...new Set(['application/zip', ...allMimeTypes])].sort()
+        return [...new Set(['application/zip', 'application/vnd.rar', 'application/x-rar-compressed', ...allMimeTypes])].sort()
       })
 
     const enablePlugin = (pluginId: string): Effect.Effect<void, PluginErrorType> =>

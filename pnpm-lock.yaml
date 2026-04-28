@@ -50,6 +50,9 @@ importers:
       lucide-vue-next:
         specifier: ^0.528.0
         version: 0.528.0(vue@3.5.18(typescript@5.8.3))
+      node-unrar-js:
+        specifier: ^2.0.2
+        version: 2.0.2
       pako:
         specifier: ^2.1.0
         version: 2.1.0
@@ -2526,6 +2529,10 @@ packages:
 
   node-releases@2.0.19:
     resolution: {integrity: sha512-xxOWJsBKtzAq7DY0J+DTzuz58K8e7sJbdgwkbMWQe8UYB6ekmsQ45q0M/tJDsGaZmbC+l7n57UV8Hl5tHxO9uw==}
+
+  node-unrar-js@2.0.2:
+    resolution: {integrity: sha512-hLNmoJzqaKJnod8yiTVGe9hnlNRHotUi0CreSv/8HtfRi/3JnRC8DvsmKfeGGguRjTEulhZK6zXX5PXoVuDZ2w==}
+    engines: {node: '>=10.0.0'}
 
   nopt@7.2.1:
     resolution: {integrity: sha512-taM24ViiimT/XntxbPyJQzCG+p4EKOpgD3mxFwW38mGjVUrfERQOeY4EDHjdnptttfHuHQXFx+lTP08Q+mLa/w==}
@@ -5645,6 +5652,8 @@ snapshots:
       he: 1.2.0
 
   node-releases@2.0.19: {}
+
+  node-unrar-js@2.0.2: {}
 
   nopt@7.2.1:
     dependencies:

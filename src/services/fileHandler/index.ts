@@ -1,5 +1,7 @@
 import { Effect, Context, Layer } from 'effect'
 import { BlobReader, ZipReader } from '@zip.js/zip.js'
+import { createExtractorFromData, type FileHeader, type UnrarError } from 'node-unrar-js/esm/index.esm.js'
+import unrarWasmUrl from 'node-unrar-js/esm/js/unrar.wasm?url'
 import * as dcmjs from 'dcmjs'
 import type { DicomFile, DicomMetadata } from '@/types/dicom'
 import { FileHandlerError, ValidationError, type FileHandlerErrorType } from '@/types/effects'
@@ -9,6 +11,10 @@ export class FileHandler extends Context.Tag('FileHandler')<
   FileHandler,
   {
     readonly extractZipFile: (
+      file: File,
+      options?: { onProgress?: (completed: number, total: number, currentFile?: string) => void },
+    ) => Effect.Effect<DicomFile[], FileHandlerErrorType>
+    readonly extractRarFile: (
       file: File,
       options?: { onProgress?: (completed: number, total: number, currentFile?: string) => void },
     ) => Effect.Effect<DicomFile[], FileHandlerErrorType>
@@ -61,6 +67,8 @@ export const FileHandlerLive = Layer.effect(
       '.png',
       '.ppt',
       '.pptx',
+      '.r00',
+      '.rar',
       '.rtf',
       '.sh',
       '.svg',
@@ -142,6 +150,15 @@ export const FileHandlerLive = Layer.effect(
         return 'ZIP archive'
       }
 
+      if (
+        bytes[0] === 0x52 &&
+        bytes[1] === 0x61 &&
+        bytes[2] === 0x72 &&
+        bytes[3] === 0x21
+      ) {
+        return 'RAR archive'
+      }
+
       if (bytes[0] === 0x4d && bytes[1] === 0x5a) {
         return 'Windows executable'
       }
@@ -171,7 +188,7 @@ export const FileHandlerLive = Layer.effect(
         return typeof value === 'string' && value.trim().length > 0
       })
 
-    const shouldSkipZipEntryByName = (fileName: string): string | null => {
+    const shouldSkipArchiveEntryByName = (fileName: string): string | null => {
       if (isSystemFile(fileName)) {
         return 'system file'
       }
@@ -268,6 +285,115 @@ export const FileHandlerLive = Layer.effect(
       return `${bytes} bytes`
     }
 
+    const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+
+    const createDicomFileFromArchiveEntry = (
+      fileName: string,
+      fileBuffer: ArrayBuffer,
+    ): DicomFile => ({
+      id: generateFileId(),
+      fileName,
+      fileSize: fileBuffer.byteLength,
+      arrayBuffer: fileBuffer,
+      anonymized: false,
+    })
+
+    const processArchiveEntryBuffer = (
+      archiveType: 'ZIP' | 'RAR',
+      entryName: string,
+      fileBuffer: ArrayBuffer,
+      counters: { skippedObvious: number; skippedAmbiguous: number; skippedInvalid: number },
+    ): Effect.Effect<DicomFile | undefined, never> =>
+      Effect.gen(function* () {
+        const signatureReason = detectObviousNonDicomSignature(fileBuffer)
+        if (signatureReason) {
+          counters.skippedObvious++
+          return undefined
+        }
+
+        const isDicom = yield* validateDicomFile(fileBuffer, entryName).pipe(
+          Effect.catchAll((error) =>
+            Effect.sync(() => {
+              if (error.message.includes('missing required DICOM identity tags')) {
+                counters.skippedAmbiguous++
+              } else {
+                counters.skippedInvalid++
+              }
+              return false
+            }),
+          ),
+        )
+
+        if (!isDicom) return undefined
+
+        console.log(`Accepted DICOM file from ${archiveType}: ${entryName}`)
+        return createDicomFileFromArchiveEntry(entryName, fileBuffer)
+      })
+
+    let cachedUnrarWasmBinary: ArrayBuffer | undefined
+    const loadUnrarWasmBinary = (): Effect.Effect<ArrayBuffer, FileHandlerError> =>
+      Effect.tryPromise({
+        try: async () => {
+          if (cachedUnrarWasmBinary) return cachedUnrarWasmBinary
+
+          if (import.meta.env.MODE === 'test') {
+            const [{ readFile }, path] = await Promise.all([
+              import('node:fs/promises'),
+              import('node:path'),
+            ])
+            const wasmPath = unrarWasmUrl.startsWith('/node_modules/')
+              ? path.join(process.cwd(), unrarWasmUrl.slice(1))
+              : unrarWasmUrl
+            const bytes = await readFile(wasmPath)
+            cachedUnrarWasmBinary = toArrayBuffer(bytes)
+            return cachedUnrarWasmBinary
+          }
+
+          const response = await fetch(unrarWasmUrl)
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status} loading ${unrarWasmUrl}`)
+          }
+          cachedUnrarWasmBinary = await response.arrayBuffer()
+          return cachedUnrarWasmBinary
+        },
+        catch: (error) =>
+          new FileHandlerError({
+            message: `Failed to load RAR extractor runtime: ${error instanceof Error ? error.message : String(error)}`,
+            cause: error,
+          }),
+      })
+
+    const isMultipartRarName = (fileName: string): boolean =>
+      /\.part\d+\.rar$/i.test(fileName) || /\.r\d{2,}$/i.test(fileName)
+
+    const formatRarReadError = (file: File, error: unknown): FileHandlerError => {
+      const reason = (error as Partial<UnrarError>)?.reason
+      const detail = error instanceof Error ? error.message : String(error)
+
+      if (reason === 'ERAR_MISSING_PASSWORD' || reason === 'ERAR_BAD_PASSWORD') {
+        return new FileHandlerError({
+          message: `Encrypted RAR archives are not supported: ${file.name}`,
+          fileName: file.name,
+          cause: error,
+        })
+      }
+
+      if (reason === 'ERAR_BAD_ARCHIVE' || reason === 'ERAR_UNKNOWN_FORMAT' || reason === 'ERAR_BAD_DATA') {
+        return new FileHandlerError({
+          message: `Failed to read RAR file: ${file.name} (${formatFileSize(file.size)}). The archive is corrupt or not a RAR file.`,
+          fileName: file.name,
+          cause: error,
+        })
+      }
+
+      return new FileHandlerError({
+        message: `Failed to read RAR file: ${file.name} (${formatFileSize(file.size)}). ${detail}`,
+        fileName: file.name,
+        cause: error,
+      })
+    }
+
     const extractZipFile = (
       file: File,
       options?: { onProgress?: (completed: number, total: number, currentFile?: string) => void },
@@ -302,17 +428,19 @@ export const FileHandlerLive = Layer.effect(
         const dicomFiles: DicomFile[] = []
         let completed = 0
         const total = entries.length
-        let skippedObvious = 0
-        let skippedAmbiguous = 0
-        let skippedInvalid = 0
+        const counters = {
+          skippedObvious: 0,
+          skippedAmbiguous: 0,
+          skippedInvalid: 0,
+        }
 
         // Process each entry - zip.js extracts one file at a time without loading the whole ZIP
         for (let i = 0; i < entries.length; i++) {
           const entry = entries[i]
 
-          const skipReason = shouldSkipZipEntryByName(entry.filename)
+          const skipReason = shouldSkipArchiveEntryByName(entry.filename)
           if (skipReason) {
-            skippedObvious++
+            counters.skippedObvious++
             completed++
             options?.onProgress?.(completed, total, entry.filename)
             continue
@@ -328,36 +456,9 @@ export const FileHandlerLive = Layer.effect(
               }),
           })
 
-          const signatureReason = detectObviousNonDicomSignature(fileBuffer)
-          if (signatureReason) {
-            skippedObvious++
-            completed++
-            options?.onProgress?.(completed, total, entry.filename)
-            continue
-          }
+          const dicomFile = yield* processArchiveEntryBuffer('ZIP', entry.filename, fileBuffer, counters)
 
-          // Check if it's a DICOM file
-          const isDicom = yield* validateDicomFile(fileBuffer, entry.filename).pipe(
-            Effect.catchAll((error) =>
-              Effect.sync(() => {
-                if (error.message.includes('missing required DICOM identity tags')) {
-                  skippedAmbiguous++
-                } else {
-                  skippedInvalid++
-                }
-                return false
-              }),
-            ),
-          )
-
-          if (isDicom) {
-            const dicomFile: DicomFile = {
-              id: generateFileId(),
-              fileName: entry.filename,
-              fileSize: fileBuffer.byteLength,
-              arrayBuffer: fileBuffer,
-              anonymized: false,
-            }
+          if (dicomFile) {
             dicomFiles.push(dicomFile)
           }
 
@@ -368,7 +469,7 @@ export const FileHandlerLive = Layer.effect(
 
         console.log(
           `Extracted ${dicomFiles.length} DICOM files from ${entries.length} total files ` +
-            `(skipped obvious=${skippedObvious}, ambiguous=${skippedAmbiguous}, invalid=${skippedInvalid})`,
+            `(skipped obvious=${counters.skippedObvious}, ambiguous=${counters.skippedAmbiguous}, invalid=${counters.skippedInvalid})`,
         )
 
         if (dicomFiles.length === 0) {
@@ -383,11 +484,167 @@ export const FileHandlerLive = Layer.effect(
         return dicomFiles
       })
 
+    const extractRarFile = (
+      file: File,
+      options?: { onProgress?: (completed: number, total: number, currentFile?: string) => void },
+    ): Effect.Effect<DicomFile[], FileHandlerErrorType> =>
+      Effect.gen(function* () {
+        if (isMultipartRarName(file.name)) {
+          return yield* Effect.fail(
+            new FileHandlerError({
+              message: `Multi-part RAR archives are not supported: ${file.name}`,
+              fileName: file.name,
+            }),
+          )
+        }
+
+        const archiveBuffer = yield* Effect.tryPromise({
+          try: () => file.arrayBuffer(),
+          catch: (error) =>
+            new FileHandlerError({
+              message: `Failed to read RAR file: ${file.name}`,
+              fileName: file.name,
+              cause: error,
+            }),
+        })
+
+        const wasmBinary = yield* loadUnrarWasmBinary()
+
+        const extractor = yield* Effect.tryPromise({
+          try: () => createExtractorFromData({ data: archiveBuffer, wasmBinary }),
+          catch: (error) => formatRarReadError(file, error),
+        })
+
+        const fileList = yield* Effect.try({
+          try: () => extractor.getFileList(),
+          catch: (error) => formatRarReadError(file, error),
+        })
+
+        if (fileList.arcHeader.flags.volume) {
+          return yield* Effect.fail(
+            new FileHandlerError({
+              message: `Multi-part RAR archives are not supported: ${file.name}`,
+              fileName: file.name,
+            }),
+          )
+        }
+
+        if (fileList.arcHeader.flags.headerEncrypted) {
+          return yield* Effect.fail(
+            new FileHandlerError({
+              message: `Encrypted RAR archives are not supported: ${file.name}`,
+              fileName: file.name,
+            }),
+          )
+        }
+
+        const headers = yield* Effect.try({
+          try: () => [...fileList.fileHeaders],
+          catch: (error) => formatRarReadError(file, error),
+        })
+        const entries = headers.filter((header) => !header.flags.directory)
+        console.log(`Found ${entries.length} potential files in RAR archive`)
+
+        if (entries.some((header) => header.flags.encrypted)) {
+          return yield* Effect.fail(
+            new FileHandlerError({
+              message: `Encrypted RAR archives are not supported: ${file.name}`,
+              fileName: file.name,
+            }),
+          )
+        }
+
+        if (entries.length === 0) {
+          return []
+        }
+
+        const dicomFiles: DicomFile[] = []
+        let completed = 0
+        const total = entries.length
+        const counters = {
+          skippedObvious: 0,
+          skippedAmbiguous: 0,
+          skippedInvalid: 0,
+        }
+        const candidateHeaders: FileHeader[] = []
+
+        for (const header of entries) {
+          const skipReason = shouldSkipArchiveEntryByName(header.name)
+          if (skipReason) {
+            counters.skippedObvious++
+            completed++
+            options?.onProgress?.(completed, total, header.name)
+            continue
+          }
+          candidateHeaders.push(header)
+        }
+
+        if (candidateHeaders.length === 0) {
+          console.log(
+            `Extracted 0 DICOM files from ${entries.length} total files ` +
+              `(skipped obvious=${counters.skippedObvious}, ambiguous=${counters.skippedAmbiguous}, invalid=${counters.skippedInvalid})`,
+          )
+          return yield* Effect.fail(
+            new FileHandlerError({
+              message: `No valid DICOM files found in RAR: ${file.name}`,
+              fileName: file.name,
+            }),
+          )
+        }
+
+        const extractedFiles = yield* Effect.try({
+          try: () => [...extractor.extract({ files: candidateHeaders.map((header) => header.name) }).files],
+          catch: (error) => formatRarReadError(file, error),
+        })
+
+        for (const extractedFile of extractedFiles) {
+          const entryName = extractedFile.fileHeader.name
+          const extraction = extractedFile.extraction
+
+          if (!extraction) {
+            counters.skippedInvalid++
+            completed++
+            options?.onProgress?.(completed, total, entryName)
+            continue
+          }
+
+          const fileBuffer = toArrayBuffer(extraction)
+          const dicomFile = yield* processArchiveEntryBuffer('RAR', entryName, fileBuffer, counters)
+
+          if (dicomFile) {
+            dicomFiles.push(dicomFile)
+          }
+
+          completed++
+          options?.onProgress?.(completed, total, entryName)
+        }
+
+        console.log(
+          `Extracted ${dicomFiles.length} DICOM files from ${entries.length} total files ` +
+            `(skipped obvious=${counters.skippedObvious}, ambiguous=${counters.skippedAmbiguous}, invalid=${counters.skippedInvalid})`,
+        )
+
+        if (dicomFiles.length === 0) {
+          return yield* Effect.fail(
+            new FileHandlerError({
+              message: `No valid DICOM files found in RAR: ${file.name}`,
+              fileName: file.name,
+            }),
+          )
+        }
+
+        return dicomFiles
+      })
+
     const processFile = (file: File): Effect.Effect<DicomFile[], FileHandlerErrorType> =>
       Effect.gen(function* () {
         // Check if it's a ZIP file
         if (file.name.toLowerCase().endsWith('.zip')) {
           return yield* extractZipFile(file)
+        }
+
+        if (file.name.toLowerCase().endsWith('.rar')) {
+          return yield* extractRarFile(file)
         }
 
         // Check if it's a DICOM file
@@ -450,12 +707,12 @@ export const FileHandlerLive = Layer.effect(
         // Get supported extensions dynamically
         const supportedExtensions = yield* registry
           .getSupportedExtensions()
-          .pipe(Effect.catchAll(() => Effect.succeed(['.zip', '.dcm', '.dicom'])))
+          .pipe(Effect.catchAll(() => Effect.succeed(['.zip', '.rar', '.dcm', '.dicom'])))
 
         const extensionsList = supportedExtensions.join(', ')
         return yield* Effect.fail(
           new FileHandlerError({
-            message: `File ${file.name} has unsupported format. Only DICOM files (.dcm), ZIP archives, and supported formats (${extensionsList}) are accepted`,
+            message: `File ${file.name} has unsupported format. Only DICOM files (.dcm), ZIP/RAR archives, and supported formats (${extensionsList}) are accepted`,
             fileName: file.name,
           }),
         )
@@ -463,6 +720,7 @@ export const FileHandlerLive = Layer.effect(
 
     return {
       extractZipFile,
+      extractRarFile,
       readSingleDicomFile,
       validateDicomFile,
       processFile,

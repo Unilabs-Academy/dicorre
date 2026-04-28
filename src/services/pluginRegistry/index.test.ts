@@ -109,6 +109,23 @@ describe('PluginRegistry Service', () => {
       expect(result.jpgPlugin?.id).toBe('image-converter')
       expect(result.dcmPlugin).toBeUndefined() // No plugin should handle DCM files
     })
+
+    it('should include built-in archive formats in supported metadata', async () => {
+      const result = await runTest(Effect.gen(function* () {
+        const registry = yield* PluginRegistry
+        const extensions = yield* registry.getSupportedExtensions()
+        const mimeTypes = yield* registry.getSupportedMimeTypes()
+
+        return { extensions, mimeTypes }
+      }))
+
+      expect(result.extensions).toEqual(expect.arrayContaining(['.zip', '.rar', '.dcm', '.dicom']))
+      expect(result.mimeTypes).toEqual(expect.arrayContaining([
+        'application/zip',
+        'application/vnd.rar',
+        'application/x-rar-compressed',
+      ]))
+    })
   })
 
   describe('Plugin Configuration', () => {

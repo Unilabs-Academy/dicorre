@@ -97,8 +97,8 @@ export const TestPluginRegistryLayer = Layer.succeed(
     getFileFormatPlugins: () => Effect.succeed([]),
     getHookPlugins: () => Effect.succeed([]),
     getPluginForFile: () => Effect.succeed(undefined),
-    getSupportedExtensions: () => Effect.succeed(['.zip', '.dcm', '.dicom']),
-    getSupportedMimeTypes: () => Effect.succeed(['application/zip']),
+    getSupportedExtensions: () => Effect.succeed(['.zip', '.rar', '.dcm', '.dicom']),
+    getSupportedMimeTypes: () => Effect.succeed(['application/zip', 'application/vnd.rar', 'application/x-rar-compressed']),
     enablePlugin: () => Effect.succeed(undefined),
     disablePlugin: () => Effect.succeed(undefined),
     loadPluginConfig: () => Effect.succeed(undefined),
@@ -110,6 +110,7 @@ export const TestFileHandlerLayer = Layer.succeed(
   FileHandler,
   FileHandler.of({
     extractZipFile: (_file: File) => Effect.succeed([]),
+    extractRarFile: (_file: File) => Effect.succeed([]),
     readSingleDicomFile: (file: File) => Effect.tryPromise({
       try: async () => {
         const arrayBuffer = await file.arrayBuffer()
