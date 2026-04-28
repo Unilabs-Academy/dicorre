@@ -81,6 +81,29 @@ function sanitizeDicomVRLengths(uint8Array: Uint8Array): Uint8Array {
   return new Uint8Array(buffer)
 }
 
+function ensurePatientIdTag(uint8Array: Uint8Array, patientId?: string): Uint8Array {
+  if (!patientId) return uint8Array
+
+  const arrayBuffer = uint8Array.buffer.slice(
+    uint8Array.byteOffset,
+    uint8Array.byteOffset + uint8Array.byteLength,
+  )
+  const dicomData = dcmjs.data.DicomMessage.readFile(arrayBuffer) as any
+  const dict = dicomData.dict as Record<string, { vr?: string; Value?: any[] }>
+  const patientIdTag = tag('Patient ID')
+  const existingPatientId = dict[patientIdTag]?.Value?.[0]
+
+  if (existingPatientId) return uint8Array
+
+  dict[patientIdTag] = {
+    vr: 'LO',
+    Value: [patientId],
+  }
+
+  const buffer = dicomData.write({ allowInvalidVRLength: true })
+  return new Uint8Array(buffer)
+}
+
 export interface AnonymizationProgress {
   total: number
   completed: number
@@ -343,7 +366,7 @@ export const AnonymizerLive = Layer.effect(
             console.log(
               `Deidentified ${file.fileName} using library, result size: ${result.length}`,
             )
-            return result
+            return ensurePatientIdTag(result, processedReplacements[tag('Patient ID')])
           },
           catch: (error: any) => {
             console.error(`Library deidentification failed:`, error)

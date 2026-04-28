@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { Effect } from 'effect'
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import * as dcmjs from 'dcmjs'
 import { Anonymizer, AnonymizerLive } from './index'
 import { DicomProcessor, DicomProcessorLive } from '../dicomProcessor'
 import { Layer } from 'effect'
@@ -24,6 +25,19 @@ function loadTestDicomFile(relativePath: string): DicomFile {
     fileSize: arrayBuffer.byteLength,
     arrayBuffer,
     anonymized: false
+  }
+}
+
+function removeDicomTag(file: DicomFile, tag: string): DicomFile {
+  const dicomData = dcmjs.data.DicomMessage.readFile(file.arrayBuffer) as any
+  delete dicomData.dict[tag]
+  const buffer = dicomData.write({ allowInvalidVRLength: true })
+
+  return {
+    ...file,
+    id: `${file.id}-without-${tag}`,
+    arrayBuffer: buffer,
+    fileSize: buffer.byteLength,
   }
 }
 
@@ -343,6 +357,38 @@ describe('Anonymizer Service (Effect Service Testing)', () => {
       expect(result.anonymizedFiles.length).toBe(2)
       const ids = result.anonymizedFiles.map(f => f.metadata?.patientId)
       expect(ids.every(id => id === 'PATFIXED123')).toBe(true)
+    })
+
+    it('adds Patient ID when the source DICOM is missing PatientID', async () => {
+      const dicomFile = removeDicomTag(
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),
+        '00100020'
+      )
+
+      const parsedFiles = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processor = yield* DicomProcessor
+          return yield* processor.parseFiles([dicomFile])
+        }).pipe(Effect.provide(DicomProcessorLive))
+      )
+
+      expect(parsedFiles[0].metadata?.patientId).toBe('Unknown')
+
+      const result = await runTest(Effect.gen(function* () {
+        const anonymizer = yield* Anonymizer
+        const configService = yield* ConfigService
+        const config = yield* configService.getAnonymizationConfig
+
+        return yield* anonymizer.anonymizeStudy(
+          'test-study-missing-patient-id',
+          parsedFiles,
+          config,
+          { concurrency: 1, patientIdMap: { Unknown: 'PATMISSING1' } }
+        )
+      }))
+
+      expect(result.anonymizedFiles).toHaveLength(1)
+      expect(result.anonymizedFiles[0].metadata?.patientId).toBe('PATMISSING1')
     })
 
     it('keeps patient ID mapping when anonymizing incrementally with a study context', async () => {
