@@ -19,6 +19,7 @@ import {
 import type {
   SendFailureResult,
   SendProgressUpdate,
+  SendSplitFallbackResult,
   SendStudyResult,
   SendWarningResult
 } from '@/services/dicomSender'
@@ -754,21 +755,41 @@ export function useAppState(runtime: RuntimeType) {
                 })
               )
             },
-            onFileWarning: (warning: SendWarningResult) => {
-              return runtime.runPromise(
-                Effect.gen(function* () {
-                  const logger = yield* StudyLogger
+	            onFileWarning: (warning: SendWarningResult) => {
+	              return runtime.runPromise(
+	                Effect.gen(function* () {
+	                  const logger = yield* StudyLogger
                   yield* logger.append(study.id, {
                     ts: Date.now(),
                     level: 'warn',
                     message: `Server warning for sent file`,
                     details: warning
                   })
-                })
-              )
-            }
-          }
-        ).pipe(
+	                })
+	              )
+	            },
+	            onSplitFallback: (fallback: SendSplitFallbackResult) => {
+	              return runtime.runPromise(
+	                Effect.gen(function* () {
+	                  const logger = yield* StudyLogger
+	                  const level = fallback.status === 'succeeded' ? 'info' : 'warn'
+	                  yield* logger.append(study.id, {
+	                    ts: Date.now(),
+	                    level,
+	                    message: `Large file split fallback ${fallback.status}`,
+	                    details: {
+	                      fileName: fallback.fileName,
+	                      frameCount: fallback.frameCount,
+	                      derivedSeriesInstanceUID: fallback.derivedSeriesInstanceUID,
+	                      reason: fallback.reason,
+	                      message: fallback.message
+	                    }
+	                  })
+	                })
+	              )
+	            }
+	          }
+	        ).pipe(
           Effect.tap((sendResult) =>
             Effect.gen(function* () {
               // Mark files as sent

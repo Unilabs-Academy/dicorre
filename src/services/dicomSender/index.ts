@@ -3,6 +3,7 @@ import type { DicomFile } from '@/types/dicom'
 import type { DicomServerConfig } from '@/services/config/schema'
 import { CancelledError, NetworkError, ValidationError, type DicomSenderError, type StorageErrorType } from '@/types/effects'
 import { OPFSStorage } from '@/services/opfsStorage'
+import { DicomSplitError, inspectMultiframeSplit, splitMultiframeDicom, type SplitRefusalReason } from '@/services/dicomSplitter'
 
 export type SendFailureKind = 'timeout' | 'network' | 'http' | 'server-reported' | 'validation'
 
@@ -12,6 +13,16 @@ export interface SendWarningResult {
   readonly sopInstanceUID?: string
   readonly message: string
   readonly httpStatus?: number
+}
+
+export interface SendSplitFallbackResult {
+  readonly file: DicomFile
+  readonly fileName: string
+  readonly status: 'started' | 'succeeded' | 'skipped' | 'failed'
+  readonly message: string
+  readonly reason?: SplitRefusalReason
+  readonly frameCount?: number
+  readonly derivedSeriesInstanceUID?: string
 }
 
 export interface SendSkippedResult {
@@ -440,10 +451,11 @@ export class DicomSender extends Context.Tag("DicomSender")<
         signal?: AbortSignal
         onProgress?: (progress: SendProgressUpdate) => void
         onSkip?: (file: DicomFile, reason: string) => void
-        onFileRetry?: (failure: SendFailureResult, nextAttempt: number, delayMs: number) => void
-        onFileFailure?: (failure: SendFailureResult) => void
-        onFileWarning?: (warning: SendWarningResult) => void
-      }
+	        onFileRetry?: (failure: SendFailureResult, nextAttempt: number, delayMs: number) => void
+	        onFileFailure?: (failure: SendFailureResult) => void
+	        onFileWarning?: (warning: SendWarningResult) => void
+	        onSplitFallback?: (fallback: SendSplitFallbackResult) => void
+	      }
     ) => Effect.Effect<SendStudyResult, DicomSenderError | StorageErrorType, OPFSStorage | DicomSender>
   }
 >() { }
@@ -514,10 +526,11 @@ export const DicomSenderLive = Layer.succeed(
         signal?: AbortSignal
         onProgress?: (progress: SendProgressUpdate) => void
         onSkip?: (file: DicomFile, reason: string) => void
-        onFileRetry?: (failure: SendFailureResult, nextAttempt: number, delayMs: number) => void
-        onFileFailure?: (failure: SendFailureResult) => void
-        onFileWarning?: (warning: SendWarningResult) => void
-      }
+	        onFileRetry?: (failure: SendFailureResult, nextAttempt: number, delayMs: number) => void
+	        onFileFailure?: (failure: SendFailureResult) => void
+	        onFileWarning?: (warning: SendWarningResult) => void
+	        onSplitFallback?: (fallback: SendSplitFallbackResult) => void
+	      }
     ): Effect.Effect<SendStudyResult, DicomSenderError | StorageErrorType, OPFSStorage | DicomSender> =>
       Effect.gen(function* () {
         if (files.length === 0) {
@@ -580,10 +593,121 @@ export const DicomSenderLive = Layer.succeed(
           } catch { }
         }
 
-        const failIfCancelled = () =>
-          options?.signal?.aborted
-            ? Effect.fail(new CancelledError({ message: 'Sending was cancelled' }))
-            : Effect.void
+	        const failIfCancelled = () =>
+	          options?.signal?.aborted
+	            ? Effect.fail(new CancelledError({ message: 'Sending was cancelled' }))
+	            : Effect.void
+
+	        const notifySplitFallback = (fallback: SendSplitFallbackResult) => {
+	          try { options?.onSplitFallback?.(fallback) } catch { }
+	        }
+
+	        const shouldAttemptSplitFallback = (source: DicomFile, failureKind: SendFailureKind): boolean =>
+	          source.fileSize >= EXTREME_DICOM_FILE_WARNING_BYTES &&
+	          (failureKind === 'timeout' || failureKind === 'network')
+
+	        const sendSplitFallback = (
+	          source: DicomFile,
+	          originalAttempts: number
+	        ): Effect.Effect<SendSuccessResult | undefined, DicomSenderError> =>
+	          Effect.gen(function* () {
+	            const decision = inspectMultiframeSplit(source)
+	            if (!decision.canSplit) {
+	              notifySplitFallback({
+	                file: source,
+	                fileName: source.fileName,
+	                status: 'skipped',
+	                reason: decision.reason,
+	                message: decision.message
+	              })
+	              return undefined
+	            }
+
+	            notifySplitFallback({
+	              file: source,
+	              fileName: source.fileName,
+	              status: 'started',
+	              frameCount: decision.frameCount,
+	              message: `Sending ${decision.frameCount} derived frame instances after large file send failure`
+	            })
+
+	            const splitWarnings: SendWarningResult[] = []
+	            let lastHttpStatus: number | undefined
+
+	            const splitResult = yield* splitMultiframeDicom(source, (frame) =>
+	              Effect.gen(function* () {
+	                yield* failIfCancelled()
+	                emitProgress({
+	                  currentFile: frame.file,
+	                  retryingFile: undefined,
+	                  retryAttempt: undefined,
+	                  status: 'sending',
+	                  statusText: `Sending split frame ${frame.frameNumber}/${frame.totalFrames} for ${source.fileName}`
+	                })
+
+	                const frameResult = yield* sender.sendFile(frame.file, config, { signal: options?.signal, attemptNumber: 1 }).pipe(
+	                  Effect.mapError((error) => {
+	                    if (error instanceof CancelledError) return error
+	                    return new NetworkError({
+	                      message: `Split frame ${frame.frameNumber}/${frame.totalFrames} failed for ${source.fileName}: ${error.message}`,
+	                      url: `${config.url}/studies`,
+	                      cause: error
+	                    })
+	                  })
+	                )
+
+	                lastHttpStatus = frameResult.httpStatus
+	                for (const warning of frameResult.warnings) {
+	                  splitWarnings.push(warning)
+	                  warnings.push(warning)
+	                  options?.onFileWarning?.(warning)
+	                }
+	              })
+	            ).pipe(
+	              Effect.mapError((error) => {
+	                if (error instanceof CancelledError || error instanceof NetworkError) return error
+		                if (error instanceof DicomSplitError) {
+		                  return new ValidationError({
+		                    message: error.message,
+		                    fileName: source.fileName
+		                  })
+		                }
+		                return error
+		              }),
+	              Effect.either
+	            )
+
+	            if (splitResult._tag === 'Left') {
+	              if (splitResult.left instanceof CancelledError) {
+	                return yield* Effect.fail(splitResult.left)
+	              }
+	              notifySplitFallback({
+	                file: source,
+	                fileName: source.fileName,
+	                status: 'failed',
+	                frameCount: decision.frameCount,
+	                message: splitResult.left.message
+	              })
+	              return undefined
+	            }
+
+	            notifySplitFallback({
+	              file: source,
+	              fileName: source.fileName,
+	              status: 'succeeded',
+	              frameCount: splitResult.right.frameCount,
+	              derivedSeriesInstanceUID: splitResult.right.derivedSeriesInstanceUID,
+	              message: `Sent ${splitResult.right.frameCount} derived frame instances`
+	            })
+
+	            return {
+	              file: source,
+	              fileName: source.fileName,
+	              attempts: originalAttempts,
+	              httpStatus: lastHttpStatus,
+	              warnings: splitWarnings
+	            }
+	          })
 
         const sendEffects = filesToSend.map((file) =>
           Effect.gen(function* () {
@@ -703,18 +827,35 @@ export const DicomSenderLive = Layer.succeed(
                 continue
               }
 
-              failed.push(failure)
-              failedCount++
-              completed++
-              options?.onFileFailure?.(failure)
-              emitProgress({
-                currentFile: toSend,
-                retryingFile: undefined,
-                retryAttempt: undefined,
-                status: failureKind === 'timeout' ? 'timed-out' : 'sending',
-                statusText: failure.message
-              })
-              return undefined
+	              if (shouldAttemptSplitFallback(toSend, failureKind)) {
+	                const splitFallbackSuccess = yield* sendSplitFallback(toSend, attempts)
+	                if (splitFallbackSuccess) {
+	                  succeeded.push(splitFallbackSuccess)
+	                  sentCount++
+	                  completed++
+	                  emitProgress({
+	                    currentFile: toSend,
+	                    retryingFile: undefined,
+	                    retryAttempt: undefined,
+	                    status: 'sending',
+	                    statusText: `Sent ${toSend.fileName} as split derived frames`
+	                  })
+	                  return splitFallbackSuccess
+	                }
+	              }
+
+	              failed.push(failure)
+	              failedCount++
+	              completed++
+	              options?.onFileFailure?.(failure)
+	              emitProgress({
+	                currentFile: toSend,
+	                retryingFile: undefined,
+	                retryAttempt: undefined,
+	                status: failureKind === 'timeout' ? 'timed-out' : 'sending',
+	                statusText: failure.message
+	              })
+	              return undefined
             }
 
             return undefined

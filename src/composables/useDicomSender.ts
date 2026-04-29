@@ -4,12 +4,13 @@ import type { DicomFile } from '@/types/dicom'
 import { ConfigService } from '@/services/config'
 import type { RuntimeType } from '@/types/effects'
 import {
-  DicomSender,
-  type SendFailureResult,
-  type SendProgressUpdate,
-  type SendStudyResult,
-  type SendWarningResult
-} from '@/services/dicomSender'
+	  DicomSender,
+	  type SendFailureResult,
+	  type SendProgressUpdate,
+	  type SendSplitFallbackResult,
+	  type SendStudyResult,
+	  type SendWarningResult
+	} from '@/services/dicomSender'
 import type { OPFSStorage } from '@/services/opfsStorage'
 
 export interface SendingProgress {
@@ -59,10 +60,11 @@ export function useDicomSender(runtime?: RuntimeType) {
     options?: {
       onProgress?: (progress: SendProgressUpdate) => void
       onSkip?: (file: DicomFile, reason: string) => void
-      onFileRetry?: (failure: SendFailureResult, nextAttempt: number, delayMs: number) => void
-      onFileFailure?: (failure: SendFailureResult) => void
-      onFileWarning?: (warning: SendWarningResult) => void
-    }
+	      onFileRetry?: (failure: SendFailureResult, nextAttempt: number, delayMs: number) => void
+	      onFileFailure?: (failure: SendFailureResult) => void
+	      onFileWarning?: (warning: SendWarningResult) => void
+	      onSplitFallback?: (fallback: SendSplitFallbackResult) => void
+	    }
   ): Effect.Effect<SendStudyResult, Error, ConfigService | DicomSender | OPFSStorage> =>
     Effect.gen(function* () {
       if (!runtime) {
@@ -131,10 +133,11 @@ export function useDicomSender(runtime?: RuntimeType) {
           console.warn(`Skipping file for study ${studyId}: ${file.fileName} (${reason})`)
           options?.onSkip?.(file, reason)
         },
-        onFileRetry: options?.onFileRetry,
-        onFileFailure: options?.onFileFailure,
-        onFileWarning: options?.onFileWarning
-      })
+	        onFileRetry: options?.onFileRetry,
+	        onFileFailure: options?.onFileFailure,
+	        onFileWarning: options?.onFileWarning,
+	        onSplitFallback: options?.onSplitFallback
+	      })
 
       loading.value = false
       clearProgress(studyId)

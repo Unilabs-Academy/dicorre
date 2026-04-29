@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Effect, Layer } from 'effect'
+import * as dcmjs from 'dcmjs'
 import {
   DicomSender,
   DicomSenderLive,
@@ -11,6 +12,8 @@ import { StorageError } from '@/types/effects'
 import type { DicomFile } from '@/types/dicom'
 
 const originalFetch = globalThis.fetch
+const MULTIFRAME_TRUE_COLOR_SC_UID = '1.2.840.10008.5.1.4.1.1.7.4'
+const IMPLICIT_VR_LITTLE_ENDIAN_UID = '1.2.840.10008.1.2'
 
 const createDicomFile = (overrides: Partial<DicomFile> = {}): DicomFile => ({
   id: overrides.id ?? 'file-1',
@@ -31,6 +34,43 @@ const createDicomFile = (overrides: Partial<DicomFile> = {}): DicomFile => ({
     ...overrides.metadata
   }
 })
+
+const createSupportedMultiframeBuffer = (): ArrayBuffer => {
+  const uid = () => (dcmjs.data as any).DicomMetaDictionary.uid()
+  const sopInstanceUID = uid()
+  const meta = {
+    '00020001': { vr: 'OB', Value: [new Uint8Array([0, 1])] },
+    '00020002': { vr: 'UI', Value: [MULTIFRAME_TRUE_COLOR_SC_UID] },
+    '00020003': { vr: 'UI', Value: [sopInstanceUID] },
+    '00020010': { vr: 'UI', Value: [IMPLICIT_VR_LITTLE_ENDIAN_UID] },
+    '00020012': { vr: 'UI', Value: [uid()] },
+    '00020013': { vr: 'SH', Value: ['RATATOSKR'] }
+  }
+  const dict = {
+    '00080016': { vr: 'UI', Value: [MULTIFRAME_TRUE_COLOR_SC_UID] },
+    '00080018': { vr: 'UI', Value: [sopInstanceUID] },
+    '00080060': { vr: 'CS', Value: ['OT'] },
+    '00100010': { vr: 'PN', Value: ['REMOVED'] },
+    '00100020': { vr: 'LO', Value: ['PATIENT'] },
+    '0020000D': { vr: 'UI', Value: [uid()] },
+    '0020000E': { vr: 'UI', Value: [uid()] },
+    '00200013': { vr: 'IS', Value: ['1'] },
+    '00280002': { vr: 'US', Value: [3] },
+    '00280004': { vr: 'CS', Value: ['RGB'] },
+    '00280006': { vr: 'US', Value: [0] },
+    '00280008': { vr: 'IS', Value: ['2'] },
+    '00280010': { vr: 'US', Value: [2] },
+    '00280011': { vr: 'US', Value: [4] },
+    '00280100': { vr: 'US', Value: [8] },
+    '00280101': { vr: 'US', Value: [8] },
+    '00280102': { vr: 'US', Value: [7] },
+    '00280103': { vr: 'US', Value: [0] },
+    '7FE00010': { vr: 'OB', Value: [new Uint8Array(48)] }
+  }
+  const dicomDict = new (dcmjs.data as any).DicomDict(meta)
+  dicomDict.dict = dict
+  return dicomDict.write() as ArrayBuffer
+}
 
 const makeOpfsLayer = (buffers: Record<string, ArrayBuffer>) =>
   Layer.succeed(
@@ -179,6 +219,57 @@ describe('DicomSender Service', () => {
     expect(result.failedCount).toBe(1)
     expect(result.failed[0]?.failureKind).toBe('timeout')
     expect(result.failed[0]?.timeoutMs).toBe(60200)
+  })
+
+  it('falls back to split derived frames only after a large multi-frame file exhausts retries', async () => {
+    vi.useFakeTimers()
+    const arrayBuffer = createSupportedMultiframeBuffer()
+    const file = createDicomFile({
+      id: 'large-multiframe',
+      fileName: 'large-multiframe.dcm',
+      fileSize: 600 * 1024 * 1024,
+      arrayBuffer,
+      metadata: {
+        sopInstanceUID: '1.2.3.large',
+        transferSyntaxUID: IMPLICIT_VR_LITTLE_ENDIAN_UID
+      }
+    })
+    const fallbackSpy = vi.fn()
+
+    globalThis.fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockImplementation(() => Promise.resolve(new Response('', { status: 200 }))) as typeof fetch
+
+    const promise = runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1, {
+          onSplitFallback: fallbackSpy
+        })
+      }),
+      [file]
+    )
+
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await promise
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(5)
+    expect(result.succeededCount).toBe(1)
+    expect(result.failedCount).toBe(0)
+    expect(fallbackSpy).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'started',
+      frameCount: 2
+    }))
+    expect(fallbackSpy).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'succeeded',
+      frameCount: 2
+    }))
   })
 
   it('does not retry non-retryable 400 responses', async () => {

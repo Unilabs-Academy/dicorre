@@ -5,10 +5,19 @@ declare module 'dcmjs' {
       static write(dict: any): ArrayBuffer
       constructor(dict: any)
       dict: any
+      meta?: any
+      write(options?: any): ArrayBuffer
+    }
+
+    export class DicomDict {
+      constructor(meta: any)
+      dict: any
+      write(options?: any): ArrayBuffer
     }
     
     export class DicomMetaDictionary {
       static naturalizeDataset(dict: any): any
+      static uid(): string
     }
   }
 }
