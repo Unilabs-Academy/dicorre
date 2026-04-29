@@ -3,6 +3,7 @@ import { Effect, Layer } from 'effect'
 import {
   DicomSender,
   DicomSenderLive,
+  getEffectiveSendTimeoutMs,
   type SendStudyResult
 } from './index'
 import { OPFSStorage } from '@/services/opfsStorage'
@@ -70,6 +71,20 @@ afterEach(() => {
 })
 
 describe('DicomSender Service', () => {
+  it('keeps the configured timeout for normal-sized files', () => {
+    const timeoutMs = getEffectiveSendTimeoutMs(createDicomFile({ fileSize: 1024 }), { timeout: 30000 })
+
+    expect(timeoutMs).toBe(30000)
+  })
+
+  it('uses adaptive and increasing timeouts for large files', () => {
+    const largeFile = createDicomFile({ fileSize: 641_222_812 })
+
+    expect(getEffectiveSendTimeoutMs(largeFile, { timeout: 30000 }, 1)).toBe(335759)
+    expect(getEffectiveSendTimeoutMs(largeFile, { timeout: 30000 }, 2)).toBe(503639)
+    expect(getEffectiveSendTimeoutMs(largeFile, { timeout: 30000 }, 3)).toBe(600000)
+  })
+
   it('retries transient network failures and succeeds', async () => {
     vi.useFakeTimers()
     const file = createDicomFile()
@@ -134,6 +149,36 @@ describe('DicomSender Service', () => {
     expect(result.failedCount).toBe(1)
     expect(result.failed[0]?.failureKind).toBe('timeout')
     expect(result.failed[0]?.attempts).toBe(3)
+  })
+
+  it('records the adaptive timeout used for a large file timeout', async () => {
+    vi.useFakeTimers()
+    const file = createDicomFile({
+      fileSize: 60 * 1024 * 1024,
+      arrayBuffer: new ArrayBuffer(1)
+    })
+
+    globalThis.fetch = vi.fn()
+      .mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' })) as typeof fetch
+
+    const promise = runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1)
+      }),
+      [file]
+    )
+
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await promise
+
+    expect(result.failedCount).toBe(1)
+    expect(result.failed[0]?.failureKind).toBe('timeout')
+    expect(result.failed[0]?.timeoutMs).toBe(60200)
   })
 
   it('does not retry non-retryable 400 responses', async () => {

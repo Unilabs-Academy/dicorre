@@ -30,6 +30,7 @@ export interface SendFailureResult {
   readonly attempts: number
   readonly failureKind: SendFailureKind
   readonly httpStatus?: number
+  readonly timeoutMs?: number
   readonly message: string
 }
 
@@ -88,22 +89,32 @@ class SendAttemptError extends Error {
   readonly failureKind: SendFailureKind
   readonly httpStatus?: number
   readonly retryable: boolean
+  readonly timeoutMs?: number
 
   constructor(params: {
     message: string
     failureKind: SendFailureKind
     httpStatus?: number
     retryable: boolean
+    timeoutMs?: number
   }) {
     super(params.message)
     this.name = 'SendAttemptError'
     this.failureKind = params.failureKind
     this.httpStatus = params.httpStatus
     this.retryable = params.retryable
+    this.timeoutMs = params.timeoutMs
   }
 }
 
 const MAX_RETRIES = 2
+const DEFAULT_SEND_TIMEOUT_MS = 30000
+const MAX_SEND_TIMEOUT_MS = 600000
+const LARGE_FILE_TIMEOUT_THRESHOLD_BYTES = 50 * 1024 * 1024
+const LARGE_FILE_TIMEOUT_BYTES_PER_SECOND = 2 * 1024 * 1024
+
+export const LARGE_DICOM_FILE_WARNING_BYTES = 100 * 1024 * 1024
+export const EXTREME_DICOM_FILE_WARNING_BYTES = 500 * 1024 * 1024
 
 const FAILURE_REASON_MAP: Record<string, string> = {
   '272': 'Duplicate SOP instance',
@@ -127,6 +138,25 @@ const getRetryDelayMs = (attemptNumber: number): number => {
 
 const shouldRetryStatus = (status?: number): boolean =>
   status === 408 || status === 429 || (status !== undefined && status >= 500)
+
+export const getEffectiveSendTimeoutMs = (
+  file: Pick<DicomFile, 'fileSize' | 'arrayBuffer'>,
+  config: Pick<DicomServerConfig, 'timeout'>,
+  attemptNumber = 1
+): number => {
+  const configuredTimeout = Math.min(config.timeout ?? DEFAULT_SEND_TIMEOUT_MS, MAX_SEND_TIMEOUT_MS)
+  const fileSize = Math.max(file.fileSize || 0, file.arrayBuffer?.byteLength || 0)
+
+  if (fileSize < LARGE_FILE_TIMEOUT_THRESHOLD_BYTES) {
+    return configuredTimeout
+  }
+
+  const uploadBudgetMs = Math.ceil((fileSize / LARGE_FILE_TIMEOUT_BYTES_PER_SECOND) * 1000)
+  const adaptiveTimeout = Math.max(configuredTimeout, configuredTimeout + uploadBudgetMs)
+  const retryMultiplier = 1 + Math.max(0, attemptNumber - 1) * 0.5
+
+  return Math.min(Math.ceil(adaptiveTimeout * retryMultiplier), MAX_SEND_TIMEOUT_MS)
+}
 
 const getValueList = (dataset: Record<string, any>, naturalKey: string, hexKey: string): any[] => {
   const natural = dataset[naturalKey]
@@ -224,7 +254,8 @@ const toFailureResult = (
   failureKind: SendFailureKind,
   message: string,
   attempts: number,
-  httpStatus?: number
+  httpStatus?: number,
+  timeoutMs?: number
 ): SendFailureResult => ({
   file,
   fileName: file.fileName,
@@ -235,13 +266,15 @@ const toFailureResult = (
   attempts,
   failureKind,
   httpStatus,
+  timeoutMs,
   message
 })
 
 const executeSendAttempt = (
   candidate: DicomFile,
   serverConfig: DicomServerConfig,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  attemptNumber = 1
 ): Effect.Effect<SendAttemptSuccess, SendAttemptError | ValidationError | CancelledError> =>
   Effect.gen(function* () {
     if (!candidate.arrayBuffer || candidate.arrayBuffer.byteLength === 0) {
@@ -273,7 +306,6 @@ const executeSendAttempt = (
       }
     }
 
-    const uint8Array = new Uint8Array(candidate.arrayBuffer)
     const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2)}`
     const contentType = `multipart/related; type="application/dicom"; boundary=${boundary}`
 
@@ -287,17 +319,9 @@ const executeSendAttempt = (
     const endBoundary = `\r\n--${boundary}--`
     const textPartBytes = new TextEncoder().encode(textPart)
     const endBoundaryBytes = new TextEncoder().encode(endBoundary)
-    const totalLength = textPartBytes.length + uint8Array.length + endBoundaryBytes.length
-    const body = new Uint8Array(totalLength)
+    const body = new Blob([textPartBytes, candidate.arrayBuffer, endBoundaryBytes], { type: contentType })
 
-    let offset = 0
-    body.set(textPartBytes, offset)
-    offset += textPartBytes.length
-    body.set(uint8Array, offset)
-    offset += uint8Array.length
-    body.set(endBoundaryBytes, offset)
-
-    const timeoutMs = serverConfig.timeout ?? 30000
+    const timeoutMs = getEffectiveSendTimeoutMs(candidate, serverConfig, attemptNumber)
     const controller = new AbortController()
     let cancelled = false
     const abortForTimeout = () => {
@@ -345,7 +369,8 @@ const executeSendAttempt = (
             return new SendAttemptError({
               message: `Timed out after ${timeoutMs}ms while sending ${candidate.fileName}`,
               failureKind: 'timeout',
-              retryable: true
+              retryable: true,
+              timeoutMs
             })
           }
 
@@ -405,7 +430,7 @@ export class DicomSender extends Context.Tag("DicomSender")<
     readonly sendFile: (
       file: DicomFile,
       config: DicomServerConfig,
-      options?: { signal?: AbortSignal }
+      options?: { signal?: AbortSignal; attemptNumber?: number }
     ) => Effect.Effect<SendSuccessResult, DicomSenderError>
     readonly sendFiles: (
       files: DicomFile[],
@@ -454,10 +479,10 @@ export const DicomSenderLive = Layer.succeed(
     sendFile: (
       file: DicomFile,
       config: DicomServerConfig,
-      options?: { signal?: AbortSignal }
+      options?: { signal?: AbortSignal; attemptNumber?: number }
     ): Effect.Effect<SendSuccessResult, DicomSenderError> =>
       Effect.gen(function* () {
-        const result = yield* executeSendAttempt(file, config, options?.signal).pipe(
+        const result = yield* executeSendAttempt(file, config, options?.signal, options?.attemptNumber).pipe(
           Effect.mapError((error) => {
             if (error instanceof CancelledError || error instanceof ValidationError) {
               return error
@@ -605,7 +630,7 @@ export const DicomSenderLive = Layer.succeed(
               }
 
               const toSend = { ...file, arrayBuffer: loaded }
-              const result = yield* sender.sendFile(toSend, config, { signal: options?.signal }).pipe(
+              const result = yield* sender.sendFile(toSend, config, { signal: options?.signal, attemptNumber: attempts }).pipe(
                 Effect.either
               )
 
@@ -660,7 +685,8 @@ export const DicomSenderLive = Layer.succeed(
                 failureKind,
                 error.message,
                 attempts,
-                (error as NetworkError).status
+                (error as NetworkError).status,
+                attemptError?.timeoutMs
               )
 
               if (attemptError?.retryable && attempts <= MAX_RETRIES) {

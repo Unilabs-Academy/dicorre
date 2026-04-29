@@ -12,6 +12,10 @@ import { useSendingProgress } from '@/composables/useSendingProgress'
 import { useFileProcessing } from '@/composables/useFileProcessing'
 import { useDragAndDrop } from '@/composables/useDragAndDrop'
 import { useDicomSender } from '@/composables/useDicomSender'
+import {
+  EXTREME_DICOM_FILE_WARNING_BYTES,
+  LARGE_DICOM_FILE_WARNING_BYTES
+} from '@/services/dicomSender'
 import type {
   SendFailureResult,
   SendProgressUpdate,
@@ -97,6 +101,10 @@ export function useAppState(runtime: RuntimeType) {
     result.attempted > 0 ? Math.round(((result.succeededCount + result.failedCount) / result.attempted) * 100) : 0
 
   const formatGiB = (bytes: number): string => `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+  const formatFileSize = (bytes: number): string =>
+    bytes >= 1024 * 1024 * 1024
+      ? formatGiB(bytes)
+      : `${Math.round(bytes / (1024 * 1024))} MiB`
 
   const groupAsSamePatient = async (): Promise<void> => {
     const selected = selectedStudies.value
@@ -636,6 +644,35 @@ export function useAppState(runtime: RuntimeType) {
             yield* logger.append(study.id, { ts: Date.now(), level: 'error', message: `No anonymized files to send; aborted` })
             return undefined
           }
+
+          const largeSendFiles = studyFiles.filter(file => (file.fileSize || 0) >= LARGE_DICOM_FILE_WARNING_BYTES)
+          if (largeSendFiles.length > 0) {
+            const logger = yield* StudyLogger
+            const largestFile = largeSendFiles.reduce((largest, file) =>
+              (file.fileSize || 0) > (largest.fileSize || 0) ? file : largest
+            )
+            yield* logger.append(study.id, {
+              ts: Date.now(),
+              level: 'warn',
+              message: `Large file send warning`,
+              details: {
+                largeFileCount: largeSendFiles.length,
+                largestFileName: largestFile.fileName,
+                largestFileSize: largestFile.fileSize,
+                largestFileSizeText: formatFileSize(largestFile.fileSize || 0),
+                note: 'Large DICOM files use adaptive send timeouts, but receiver or proxy upload limits can still reject them.'
+              }
+            })
+            if ((largestFile.fileSize || 0) >= EXTREME_DICOM_FILE_WARNING_BYTES) {
+              yield* Effect.sync(() => {
+                toast.warning('Extremely large DICOM file', {
+                  description: `${formatFileSize(largestFile.fileSize || 0)} will use an adaptive send timeout. Receiver or proxy upload limits may still reject it.`,
+                  duration: 10000
+                })
+              })
+            }
+          }
+
           for (const plugin of hookPlugins) {
             if (plugin.hooks.beforeSend) {
               yield* plugin.hooks.beforeSend(study).pipe(
