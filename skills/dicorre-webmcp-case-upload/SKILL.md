@@ -79,9 +79,15 @@ After WebMCP tool discovery:
 1. Parse the private JSON file locally.
 2. Call `ratatoskr.load_config({ "config": config })`.
 3. Call `ratatoskr.get_config_summary()` and verify the destination URL, header names, auth type, and secret-presence flags are correct. This summary is redacted and should not include secret values.
-4. Call `ratatoskr.test_connection()` and continue only when it returns `ok: true`.
 
 Do not use a `project` URL that embeds confidential settings except as a temporary manual recovery path. URL query params can appear in history, logs, and referrers before the app removes them.
+
+## Case File Preparation
+
+- If a case is already a `.zip`, `.rar`, `.dcm`, or `.dicom` file, upload it directly.
+- If a case is a folder, create one ZIP archive for that folder first and upload the ZIP instead of attaching every individual file. This is more reliable for browser automation and keeps each case as a single upload unit.
+- Preserve the folder's internal relative paths inside the ZIP. Do not flatten the folder contents.
+- Record both the original folder path and the temporary ZIP path in the local manifest. Delete temporary ZIPs only after the case has been recorded as successfully processed, anonymized, and sent.
 
 ## Core Loop
 
@@ -89,10 +95,11 @@ Process one case or small case batch at a time. Do not attach a 100GB collection
 
 1. Launch your own browser process with the Chrome 149+ executable and WebMCP flags above, then open `https://dicorre.tmcacademy.xyz/?agent=1`.
 2. Verify at least one Dicorre WebMCP tool exists, specifically `ratatoskr.get_status`. Only after this should you attach local files to `[data-testid="toolbar-file-input"]`.
-3. Load and verify the private config with `ratatoskr.load_config`, `ratatoskr.get_config_summary`, and `ratatoskr.test_connection`.
+3. Load and verify the private config with `ratatoskr.load_config` and `ratatoskr.get_config_summary`.
 4. Call `ratatoskr.get_status`; continue only when `configReady` is true and there are no errors.
 5. For each local case:
    - Call `ratatoskr.clear_all({ "wait": true })` before starting unless intentionally continuing an existing in-page session.
+   - If the local case is a folder, ZIP the folder first and use that ZIP as the upload file for this case.
    - Call `ratatoskr.prepare_case_upload()`.
    - Attach the local ZIP/DICOM file(s) to the returned `fileInputSelector`, normally `[data-testid="toolbar-file-input"]`, using your browser automation file-upload primitive.
    - Call `ratatoskr.process_uploaded_cases({ "wait": true, "timeoutMs": 300000 })`.
@@ -100,7 +107,9 @@ Process one case or small case batch at a time. Do not attach a 100GB collection
    - Call `ratatoskr.select_studies({ "mode": "all" })`, unless the user provided a narrower selection rule.
    - Call `ratatoskr.anonymize_selected({ "wait": true, "timeoutMs": 900000 })`.
    - Call `ratatoskr.list_studies()` again and verify every intended file is anonymized.
+   - From this post-anonymization `ratatoskr.list_studies()` result, capture only anonymized identifiers for reporting: `patientId` and `accessionNumber`.
    - Call `ratatoskr.send_selected({ "confirmNonAnonymized": false, "confirmResend": false, "wait": true, "timeoutMs": 900000 })`.
+   - Call `ratatoskr.list_studies()` after sending and verify `sentCount` equals the intended anonymized file count. Do not treat `send_selected.ok: true` by itself as proof of delivery.
    - Call `ratatoskr.get_logs({})` and save the returned logs or a concise summary to the local run manifest.
    - Call `ratatoskr.clear_all({ "wait": true })` after recording the result.
 
@@ -108,10 +117,10 @@ Process one case or small case batch at a time. Do not attach a 100GB collection
 
 - `ratatoskr.load_config` accepts a full app config object from the local private JSON file and returns only a redacted summary.
 - `ratatoskr.get_config_summary` returns DICOM destination settings, header names, auth type, plugin settings, and secret-present flags without secret values.
-- `ratatoskr.test_connection` checks the configured DICOMweb destination and returns redacted diagnostics.
+- Ignore `ratatoskr.test_connection` if an older deployment still exposes it. The current DICOMweb destination does not provide a reliable probe endpoint; use post-send `sentCount` verification instead.
 - `ratatoskr.prepare_case_upload` returns the upload selector and accepted formats. It does not upload files by itself.
 - `ratatoskr.process_uploaded_cases` waits for parsing and study grouping after files have been attached.
-- `ratatoskr.list_studies` returns study UID, accession, patient ID, assigned patient ID, file counts, anonymized counts, sent counts, and failure hints.
+- `ratatoskr.list_studies` returns study UID, accession, patient ID, assigned patient ID, file counts, anonymized counts, sent counts, and failure hints. Use it before anonymization only for counts/selection; use it after anonymization to capture reportable anonymized identifiers.
 - `ratatoskr.select_studies` supports `{ "mode": "all" }` or `{ "studyInstanceUIDs": [...] }`.
 - `ratatoskr.send_selected` intentionally refuses unsafe sends unless explicit confirmation flags are true.
 - `ratatoskr.wait_for_idle` is useful between steps if the browser automation layer is uncertain whether the app has settled.
@@ -121,11 +130,13 @@ Process one case or small case batch at a time. Do not attach a 100GB collection
 
 - Never send non-anonymized files unless the user explicitly instructs you to do so. Keep `confirmNonAnonymized: false` by default.
 - Never resend already-sent studies unless the user explicitly instructs you to do so. Keep `confirmResend: false` by default.
-- Do not expose raw DICOM bytes, patient identifiers, auth headers, or full metadata dumps in chat output.
+- Do not expose raw DICOM bytes, original patient identifiers, auth headers, or full metadata dumps in chat output.
+- Report back only anonymized identifiers captured after anonymization. For each source folder, use this format once per anonymized study: `{folder name} -> {anonymized patientId} - {anonymized accessionNumber}`.
 - Do not expose private config JSON, API keys, auth credentials, or secret-bearing URL parameters in chat output or manifests.
 - Keep durable local records in a manifest, not in the conversation. A JSONL manifest is usually best.
 - Do not continue with UI clicking unless explicitly authorized.
-- Do not upload cases if config loading, config summary verification, or connection testing fails.
+- Do not upload cases if config loading or config summary verification fails.
+- Do not mark a case successful unless post-send `ratatoskr.list_studies()` confirms every intended anonymized file has `sentCount` coverage. If send is not confirmed, record the case as failed or partial with redacted logs.
 - If anonymization, sending, or clearing times out, record the case as failed or partial and continue only if the user requested best-effort batch processing.
 
 ## Manifest Fields
@@ -142,6 +153,13 @@ For each case, record at least:
   "fileCount": 0,
   "anonymizedCount": 0,
   "sentCount": 0,
+  "anonymizedIdentifiers": [
+    {
+      "folderName": "case-folder",
+      "patientId": "anonymized patient id",
+      "accessionNumber": "anonymized accession number"
+    }
+  ],
   "errors": [],
   "logSummary": []
 }

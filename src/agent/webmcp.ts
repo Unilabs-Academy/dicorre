@@ -30,7 +30,6 @@ export interface RatatoskrAgentTools {
   getStatus: () => RatatoskrAgentStatus
   loadConfig: (input: Record<string, unknown>) => Promise<unknown>
   getConfigSummary: () => unknown
-  testConnection: () => Promise<unknown>
   prepareCaseUpload: () => unknown
   getUploadStatus: () => unknown
   processUploadedCases: (input: Record<string, unknown>) => Promise<unknown>
@@ -114,15 +113,6 @@ const registeredToolDefinitions = (tools: RatatoskrAgentTools): WebMcpTool[] => 
     inputSchema: noInputSchema,
     annotations: { readOnlyHint: true, untrustedContentHint: false },
     execute: async () => tools.getConfigSummary(),
-  },
-  {
-    name: 'ratatoskr.test_connection',
-    title: 'Test DICOM Connection',
-    description:
-      'Test the configured DICOMweb destination and return redacted connection diagnostics without credentials.',
-    inputSchema: noInputSchema,
-    annotations: { readOnlyHint: true, untrustedContentHint: false },
-    execute: async () => tools.testConnection(),
   },
   {
     name: 'ratatoskr.prepare_case_upload',

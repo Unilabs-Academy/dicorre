@@ -31,8 +31,6 @@ import {
   type WebMcpRegistrationState,
 } from '@/agent/webmcp'
 import { StudyLogger } from '@/services/studyLogger'
-import { ConfigService } from '@/services/config'
-import { DicomSender } from '@/services/dicomSender'
 import 'vue-sonner/style.css'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import {
@@ -230,38 +228,6 @@ const loadConfigForAgent = async (input: Record<string, unknown>) => {
     return {
       ok: false,
       status: 'invalid-config',
-      message: error instanceof Error ? error.message : String(error),
-    }
-  }
-}
-
-const testConnectionForAgent = async () => {
-  const config = appState.config.value
-  const fallback = {
-    ok: false,
-    url: config?.dicomServer?.url,
-    testConnectionPath: config?.dicomServer?.testConnectionPath,
-  }
-
-  try {
-    const result = await runtime.runPromise(
-      Effect.gen(function* () {
-        const configService = yield* ConfigService
-        const sender = yield* DicomSender
-        const serverConfig = yield* configService.getServerConfig
-        const ok = yield* sender.testConnection(serverConfig)
-        return {
-          ok,
-          url: serverConfig.url,
-          testConnectionPath: serverConfig.testConnectionPath,
-        }
-      })
-    )
-
-    return result
-  } catch (error) {
-    return {
-      ...fallback,
       message: error instanceof Error ? error.message : String(error),
     }
   }
@@ -510,7 +476,6 @@ const agentTools: RatatoskrAgentTools = {
   getStatus: getAgentStatus,
   loadConfig: loadConfigForAgent,
   getConfigSummary: getConfigSummaryForAgent,
-  testConnection: testConnectionForAgent,
   prepareCaseUpload,
   getUploadStatus,
   processUploadedCases,

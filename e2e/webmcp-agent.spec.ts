@@ -7,7 +7,6 @@ test.describe('WebMCP agent mode', () => {
     'ratatoskr.get_status',
     'ratatoskr.load_config',
     'ratatoskr.get_config_summary',
-    'ratatoskr.test_connection',
     'ratatoskr.prepare_case_upload',
     'ratatoskr.get_upload_status',
     'ratatoskr.process_uploaded_cases',
@@ -139,15 +138,8 @@ test.describe('WebMCP agent mode', () => {
     })
   })
 
-  test('loads private config, returns redacted summary, and tests connection', async ({ page }) => {
+  test('loads private config and returns redacted summary', async ({ page }) => {
     await installWebMcpShim(page)
-    await page.route('**/api/test-dicom/studies', async route => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/dicom+json',
-        body: '[]',
-      })
-    })
     await page.goto(appUrl)
 
     const loaded = await executeShimTool(page, 'ratatoskr.load_config', {
@@ -190,14 +182,6 @@ test.describe('WebMCP agent mode', () => {
     expect(JSON.stringify(summary.output)).not.toContain('PRIVATE_BEARER_TOKEN_FOR_REDACTION_TEST')
     expect(JSON.stringify(summary.output)).not.toContain('PRIVATE_NOTIFIER_KEY_FOR_REDACTION_TEST')
     expect(JSON.stringify(summary.output)).not.toContain('PRIVATE_EXTRA_HEADER_FOR_REDACTION_TEST')
-
-    const connection = await executeShimTool(page, 'ratatoskr.test_connection')
-    expect(connection.found).toBe(true)
-    expect(connection.output).toEqual({
-      ok: true,
-      url: '/api/test-dicom',
-      testConnectionPath: '/studies',
-    })
   })
 
   test('rejects invalid config through the WebMCP config loader', async ({ page }) => {
