@@ -13,6 +13,8 @@ import { useSessionPersistence } from '@/composables/useSessionPersistence'
 import { useDownload } from '@/composables/useDownload'
 import { useProjectSharing } from '@/composables/useProjectSharing'
 import { useTableState } from '@/composables/useTableState'
+import { useAnonymizationProgress } from '@/composables/useAnonymizationProgress'
+import { useSendingProgress } from '@/composables/useSendingProgress'
 import FileProcessingProgress from '@/components/FileProcessingProgress.vue'
 import WorkerDebugPanel from '@/components/WorkerDebugPanel.vue'
 import AppToolbar from '@/components/AppToolbar.vue'
@@ -22,6 +24,11 @@ import StudyLogSheet from '@/components/StudyLogSheet.vue'
 import StudyMetadataSheet from '@/components/StudyMetadataSheet.vue'
 import { Toaster } from '@/components/ui/sonner'
 import { useDropdownSheetTransition } from '@/utils/dropdownSheetTransition'
+import {
+  registerRatatoskrWebMcpTools,
+  type RatatoskrAgentStatus,
+  type WebMcpRegistrationState,
+} from '@/agent/webmcp'
 import 'vue-sonner/style.css'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import {
@@ -41,6 +48,12 @@ const appState = useAppState(runtime)
 provide('studyActions', {
   cancelStudySend: (studyId: string) => appState.cancelStudySend(studyId)
 })
+
+const isAgentMode = new URLSearchParams(window.location.search).get('agent') === '1'
+const webMcpState = ref<WebMcpRegistrationState>(
+  isAgentMode ? { kind: 'unavailable', message: 'WebMCP has not been checked yet.' } : { kind: 'disabled' }
+)
+let disposeWebMcpTools: (() => void) | undefined
 
 const { isDownloading, downloadSelectedStudies } = useDownload(runtime)
 const { loadConfigFromUrl } = useProjectSharing()
@@ -83,6 +96,9 @@ const {
   cancelAll
 } = appState.fileProcessing
 
+const { studyProgressMap } = useAnonymizationProgress()
+const { studySendingProgressMap } = useSendingProgress()
+
 // Extract removeTask separately to use in template
 const removeTask = (taskId: string) => {
   appState.fileProcessing.tasks.value.delete(taskId)
@@ -95,6 +111,57 @@ const isAppReady = computed(() => {
 
 const studiesData = computed(() => {
   return appState.studies.value || []
+})
+
+const getActiveAnonymizations = () =>
+  Array.from(studyProgressMap.value.values()).filter((progress) => progress.isProcessing).length
+
+const getActiveSends = () =>
+  Array.from(studySendingProgressMap.value.values()).filter((progress) => progress.isProcessing).length
+
+const getAgentStatus = (): RatatoskrAgentStatus => {
+  const fileProcessing = getRunningTasks().length
+  const anonymization = getActiveAnonymizations()
+  const sending = getActiveSends()
+  const configReady = isAppReady.value
+  const errors = [
+    appState.appError.value,
+    appState.configError.value?.message,
+  ].filter((message): message is string => !!message)
+  const idle = !isRestoring.value && fileProcessing === 0 && anonymization === 0 && sending === 0
+
+  return {
+    ok: configReady && errors.length === 0,
+    status: !configReady ? 'not-ready' : idle ? 'ready' : 'busy',
+    agentMode: isAgentMode,
+    configReady,
+    restoring: isRestoring.value,
+    idle,
+    counts: {
+      studies: appState.studies.value.length,
+      files: appState.dicomFiles.value.length,
+      anonymizedFiles: appState.anonymizedFilesCount.value,
+      sentFiles: appState.dicomFiles.value.filter((file) => file.sent).length,
+      selectedStudies: appState.selectedStudiesCount.value,
+    },
+    activeOperations: {
+      fileProcessing,
+      anonymization,
+      sending,
+    },
+    errors,
+  }
+}
+
+const agentModeStatusText = computed(() => {
+  if (!isAgentMode) return ''
+  if (webMcpState.value.kind === 'registered') {
+    return `WebMCP agent mode active: ${webMcpState.value.toolNames.join(', ')}`
+  }
+  if (webMcpState.value.kind === 'unavailable' || webMcpState.value.kind === 'error') {
+    return webMcpState.value.message
+  }
+  return 'WebMCP agent mode disabled'
 })
 
 const initialOverrides = computed<Record<string, string>>(() => {
@@ -221,9 +288,19 @@ onMounted(async () => {
 
   // Restore session after potential project loading
   restoreSession()
+
+  if (isAgentMode) {
+    const registration = registerRatatoskrWebMcpTools({
+      enabled: true,
+      getStatus: getAgentStatus,
+    })
+    webMcpState.value = registration.state
+    disposeWebMcpTools = registration.dispose
+  }
 })
 
 onUnmounted(() => {
+  disposeWebMcpTools?.()
   runtime.dispose()
   appState.clearAppError()
 })
@@ -359,6 +436,14 @@ function handleMetadataSheetUpdateOpen(next: boolean): void {
           @open-config-editor="showConfigEditSheet = true"
           @open-custom-fields-editor="openCustomFieldsFromToolbar"
         />
+
+        <Alert
+          v-if="isAgentMode"
+          :variant="webMcpState.kind === 'registered' ? 'default' : 'destructive'"
+          data-testid="webmcp-agent-status"
+        >
+          <AlertDescription>{{ agentModeStatusText }}</AlertDescription>
+        </Alert>
 
         <!-- File Processing Progress -->
         <!-- Individual file processing progress indicators -->
