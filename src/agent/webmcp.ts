@@ -28,6 +28,9 @@ export interface RatatoskrAgentStatus {
 
 export interface RatatoskrAgentTools {
   getStatus: () => RatatoskrAgentStatus
+  loadConfig: (input: Record<string, unknown>) => Promise<unknown>
+  getConfigSummary: () => unknown
+  testConnection: () => Promise<unknown>
   prepareCaseUpload: () => unknown
   getUploadStatus: () => unknown
   processUploadedCases: (input: Record<string, unknown>) => Promise<unknown>
@@ -86,6 +89,40 @@ const registeredToolDefinitions = (tools: RatatoskrAgentTools): WebMcpTool[] => 
     inputSchema: noInputSchema,
     annotations: { readOnlyHint: true, untrustedContentHint: false },
     execute: async () => tools.getStatus(),
+  },
+  {
+    name: 'ratatoskr.load_config',
+    title: 'Load Ratatoskr Config',
+    description:
+      'Load a complete Ratatoskr application configuration object supplied by the local agent. Returns only a redacted summary.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        config: { type: 'object' },
+      },
+      required: ['config'],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, untrustedContentHint: false },
+    execute: (input) => tools.loadConfig(input),
+  },
+  {
+    name: 'ratatoskr.get_config_summary',
+    title: 'Get Config Summary',
+    description:
+      'Return a redacted summary of the active configuration, including destination URL and secret-presence flags but no secret values.',
+    inputSchema: noInputSchema,
+    annotations: { readOnlyHint: true, untrustedContentHint: false },
+    execute: async () => tools.getConfigSummary(),
+  },
+  {
+    name: 'ratatoskr.test_connection',
+    title: 'Test DICOM Connection',
+    description:
+      'Test the configured DICOMweb destination and return redacted connection diagnostics without credentials.',
+    inputSchema: noInputSchema,
+    annotations: { readOnlyHint: true, untrustedContentHint: false },
+    execute: async () => tools.testConnection(),
   },
   {
     name: 'ratatoskr.prepare_case_upload',

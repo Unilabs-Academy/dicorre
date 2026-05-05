@@ -5,6 +5,9 @@ test.describe('WebMCP agent mode', () => {
   const appUrl = 'http://127.0.0.1:5173/?agent=1'
   const expectedToolNames = [
     'ratatoskr.get_status',
+    'ratatoskr.load_config',
+    'ratatoskr.get_config_summary',
+    'ratatoskr.test_connection',
     'ratatoskr.prepare_case_upload',
     'ratatoskr.get_upload_status',
     'ratatoskr.process_uploaded_cases',
@@ -16,6 +19,47 @@ test.describe('WebMCP agent mode', () => {
     'ratatoskr.wait_for_idle',
     'ratatoskr.clear_all',
   ]
+  const privateHeaderValue = 'PRIVATE_UPLOAD_KEY_FOR_REDACTION_TEST'
+  const validAgentConfig = {
+    version: 1,
+    dicomServer: {
+      url: '/api/test-dicom',
+      headers: {
+        'x-api-key': privateHeaderValue,
+      },
+      timeout: 45000,
+      testConnectionPath: '/studies',
+      auth: {
+        type: 'bearer',
+        credentials: 'PRIVATE_BEARER_TOKEN_FOR_REDACTION_TEST',
+      },
+      description: 'Agent test DICOM-Web server',
+    },
+    anonymization: {
+      profileOptions: ['BasicProfile', 'RetainLongModifDatesOption'],
+      removePrivateTags: true,
+      useCustomHandlers: true,
+      dateJitterDays: 31,
+      organizationRoot: '1.2.826.0.1.3680043.8.498',
+      replacements: {
+        default: 'REMOVED',
+        'Patient ID': 'PAT{random}',
+      },
+    },
+    plugins: {
+      enabled: ['sent-notifier'],
+      settings: {
+        'sent-notifier': {
+          url: 'https://example.test/sent',
+          authHeaderName: 'x-api-key',
+          authHeaderValue: 'PRIVATE_NOTIFIER_KEY_FOR_REDACTION_TEST',
+          headers: {
+            'x-extra': 'PRIVATE_EXTRA_HEADER_FOR_REDACTION_TEST',
+          },
+        },
+      },
+    },
+  }
 
   async function installWebMcpShim(page: any) {
     await page.addInitScript(() => {
@@ -95,9 +139,97 @@ test.describe('WebMCP agent mode', () => {
     })
   })
 
+  test('loads private config, returns redacted summary, and tests connection', async ({ page }) => {
+    await installWebMcpShim(page)
+    await page.route('**/api/test-dicom/studies', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/dicom+json',
+        body: '[]',
+      })
+    })
+    await page.goto(appUrl)
+
+    const loaded = await executeShimTool(page, 'ratatoskr.load_config', {
+      config: validAgentConfig,
+    })
+    expect(loaded.found).toBe(true)
+    expect(loaded.output).toMatchObject({
+      ok: true,
+      dicomServer: {
+        url: '/api/test-dicom',
+        timeout: 45000,
+        testConnectionPath: '/studies',
+        headers: {
+          names: ['x-api-key'],
+          valuePresentByName: { 'x-api-key': true },
+        },
+        auth: {
+          type: 'bearer',
+          credentialsPresent: true,
+        },
+      },
+      plugins: {
+        enabled: ['sent-notifier'],
+        sentNotifier: {
+          url: 'https://example.test/sent',
+          authHeaderName: 'x-api-key',
+          authHeaderValuePresent: true,
+          headers: {
+            names: ['x-extra'],
+            valuePresentByName: { 'x-extra': true },
+          },
+        },
+      },
+    })
+
+    const summary = await executeShimTool(page, 'ratatoskr.get_config_summary')
+    expect(summary.found).toBe(true)
+    expect(summary.output).toMatchObject(loaded.output)
+    expect(JSON.stringify(summary.output)).not.toContain(privateHeaderValue)
+    expect(JSON.stringify(summary.output)).not.toContain('PRIVATE_BEARER_TOKEN_FOR_REDACTION_TEST')
+    expect(JSON.stringify(summary.output)).not.toContain('PRIVATE_NOTIFIER_KEY_FOR_REDACTION_TEST')
+    expect(JSON.stringify(summary.output)).not.toContain('PRIVATE_EXTRA_HEADER_FOR_REDACTION_TEST')
+
+    const connection = await executeShimTool(page, 'ratatoskr.test_connection')
+    expect(connection.found).toBe(true)
+    expect(connection.output).toEqual({
+      ok: true,
+      url: '/api/test-dicom',
+      testConnectionPath: '/studies',
+    })
+  })
+
+  test('rejects invalid config through the WebMCP config loader', async ({ page }) => {
+    await installWebMcpShim(page)
+    await page.goto(appUrl)
+
+    const before = await executeShimTool(page, 'ratatoskr.get_config_summary')
+    const invalid = await executeShimTool(page, 'ratatoskr.load_config', {
+      config: {
+        dicomServer: { timeout: 30000 },
+        anonymization: { profile: 'basic', removePrivateTags: true },
+      },
+    })
+    const after = await executeShimTool(page, 'ratatoskr.get_config_summary')
+
+    expect(invalid.found).toBe(true)
+    expect(invalid.output).toMatchObject({
+      ok: false,
+      status: 'invalid-config',
+    })
+    expect(after.output).toMatchObject(before.output)
+  })
+
   test('coordinates upload, listing, selection, and clearing through WebMCP tools', async ({ page }) => {
     await installWebMcpShim(page)
     await page.goto(appUrl)
+
+    const loaded = await executeShimTool(page, 'ratatoskr.load_config', {
+      config: validAgentConfig,
+    })
+    expect(loaded.found).toBe(true)
+    expect(loaded.output.ok).toBe(true)
 
     const prepare = await executeShimTool(page, 'ratatoskr.prepare_case_upload')
     expect(prepare.found).toBe(true)

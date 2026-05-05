@@ -99,7 +99,7 @@ export const ConfigServiceLive = Layer.scoped(
         const migrated = migrateConfig(configData, { source: 'uploaded' })
         yield* SubscriptionRef.set(ref, migrated)
         yield* persistence.save(migrated)
-        console.log('Configuration loaded successfully:', migrated)
+        console.log('Configuration loaded successfully')
       } catch (e) {
         const error = e as Error
         throw new ConfigurationError({

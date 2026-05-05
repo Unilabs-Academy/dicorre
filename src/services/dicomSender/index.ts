@@ -150,6 +150,23 @@ const getRetryDelayMs = (attemptNumber: number): number => {
 const shouldRetryStatus = (status?: number): boolean =>
   status === 408 || status === 429 || (status !== undefined && status >= 500)
 
+const buildDicomServerHeaders = (serverConfig: DicomServerConfig): Record<string, string> => {
+  const headers: Record<string, string> = {
+    'Accept': 'application/dicom+json',
+    ...serverConfig.headers
+  }
+
+  if (serverConfig.auth) {
+    if (serverConfig.auth.type === 'basic') {
+      headers['Authorization'] = `Basic ${serverConfig.auth.credentials}`
+    } else if (serverConfig.auth.type === 'bearer') {
+      headers['Authorization'] = `Bearer ${serverConfig.auth.credentials}`
+    }
+  }
+
+  return headers
+}
+
 export const getEffectiveSendTimeoutMs = (
   file: Pick<DicomFile, 'fileSize' | 'arrayBuffer'>,
   config: Pick<DicomServerConfig, 'timeout'>,
@@ -304,18 +321,7 @@ const executeSendAttempt = (
 
     yield* Effect.log(`Sending DICOM file: ${candidate.fileName}`)
 
-    const headers: Record<string, string> = {
-      'Accept': 'application/dicom+json',
-      ...serverConfig.headers
-    }
-
-    if (serverConfig.auth) {
-      if (serverConfig.auth.type === 'basic') {
-        headers['Authorization'] = `Basic ${serverConfig.auth.credentials}`
-      } else if (serverConfig.auth.type === 'bearer') {
-        headers['Authorization'] = `Bearer ${serverConfig.auth.credentials}`
-      }
-    }
+    const headers = buildDicomServerHeaders(serverConfig)
 
     const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2)}`
     const contentType = `multipart/related; type="application/dicom"; boundary=${boundary}`
@@ -475,7 +481,7 @@ export const DicomSenderLive = Layer.succeed(
             const testUrl = `${config.url}${normalizedPath}`
             const response = await fetch(testUrl, {
               method: 'GET',
-              headers: { 'Accept': 'application/dicom+json', ...config.headers }
+              headers: buildDicomServerHeaders(config)
             })
             return response.ok
           },

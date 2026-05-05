@@ -31,6 +31,8 @@ import {
   type WebMcpRegistrationState,
 } from '@/agent/webmcp'
 import { StudyLogger } from '@/services/studyLogger'
+import { ConfigService } from '@/services/config'
+import { DicomSender } from '@/services/dicomSender'
 import 'vue-sonner/style.css'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import {
@@ -152,6 +154,116 @@ const getAgentStatus = (): RatatoskrAgentStatus => {
       sending,
     },
     errors,
+  }
+}
+
+const valuePresent = (value: unknown): boolean =>
+  value !== undefined && value !== null && String(value).length > 0
+
+const summarizeHeaders = (headers: unknown) => {
+  if (!headers || typeof headers !== 'object') {
+    return {
+      names: [],
+      valuePresentByName: {},
+    }
+  }
+
+  const entries = Object.entries(headers as Record<string, unknown>)
+  return {
+    names: entries.map(([name]) => name),
+    valuePresentByName: Object.fromEntries(entries.map(([name, value]) => [name, valuePresent(value)])),
+  }
+}
+
+const getConfigSummaryForAgent = () => {
+  const config = appState.config.value
+  if (!config) {
+    return {
+      ok: false,
+      configReady: false,
+      status: 'not-ready',
+    }
+  }
+
+  const dicomServer = config.dicomServer
+  const sentNotifierSettings = (config.plugins as any)?.settings?.['sent-notifier'] ?? {}
+
+  return {
+    ok: true,
+    configReady: true,
+    dicomServer: {
+      url: dicomServer.url,
+      timeout: dicomServer.timeout,
+      testConnectionPath: dicomServer.testConnectionPath,
+      description: dicomServer.description,
+      headers: summarizeHeaders(dicomServer.headers),
+      auth: {
+        type: dicomServer.auth?.type ?? 'none',
+        credentialsPresent: valuePresent(dicomServer.auth?.credentials),
+      },
+    },
+    plugins: {
+      enabled: config.plugins?.enabled ?? [],
+      sentNotifier: {
+        url: sentNotifierSettings.url,
+        authHeaderName: sentNotifierSettings.authHeaderName ?? sentNotifierSettings.apiKeyHeader,
+        authHeaderValuePresent: valuePresent(sentNotifierSettings.authHeaderValue ?? sentNotifierSettings.apiKey),
+        headers: summarizeHeaders(sentNotifierSettings.headers),
+      },
+    },
+  }
+}
+
+const loadConfigForAgent = async (input: Record<string, unknown>) => {
+  if (!input.config || typeof input.config !== 'object') {
+    return {
+      ok: false,
+      status: 'invalid-input',
+      message: 'Expected input.config to contain a Ratatoskr application config object.',
+    }
+  }
+
+  try {
+    await appState.handleLoadConfig(input.config)
+    return getConfigSummaryForAgent()
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'invalid-config',
+      message: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+const testConnectionForAgent = async () => {
+  const config = appState.config.value
+  const fallback = {
+    ok: false,
+    url: config?.dicomServer?.url,
+    testConnectionPath: config?.dicomServer?.testConnectionPath,
+  }
+
+  try {
+    const result = await runtime.runPromise(
+      Effect.gen(function* () {
+        const configService = yield* ConfigService
+        const sender = yield* DicomSender
+        const serverConfig = yield* configService.getServerConfig
+        const ok = yield* sender.testConnection(serverConfig)
+        return {
+          ok,
+          url: serverConfig.url,
+          testConnectionPath: serverConfig.testConnectionPath,
+        }
+      })
+    )
+
+    return result
+  } catch (error) {
+    return {
+      ...fallback,
+      message: error instanceof Error ? error.message : String(error),
+    }
   }
 }
 
@@ -396,6 +508,9 @@ const clearAllForAgent = async (input: Record<string, unknown>) => {
 
 const agentTools: RatatoskrAgentTools = {
   getStatus: getAgentStatus,
+  loadConfig: loadConfigForAgent,
+  getConfigSummary: getConfigSummaryForAgent,
+  testConnection: testConnectionForAgent,
   prepareCaseUpload,
   getUploadStatus,
   processUploadedCases,

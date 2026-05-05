@@ -125,6 +125,34 @@ describe('DicomSender Service', () => {
     expect(getEffectiveSendTimeoutMs(largeFile, { timeout: 30000 }, 3)).toBe(600000)
   })
 
+  it('uses configured headers and auth when testing connection', async () => {
+    globalThis.fetch = vi.fn()
+      .mockResolvedValue(new Response('', { status: 200 })) as typeof fetch
+
+    const result = await runSendFile(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.testConnection({
+          url: 'http://localhost:8042',
+          headers: { 'x-api-key': 'test-key' },
+          auth: { type: 'bearer', credentials: 'test-token' },
+          testConnectionPath: '/studies',
+          description: 'Test Server'
+        })
+      })
+    )
+
+    expect(result).toBe(true)
+    expect(globalThis.fetch).toHaveBeenCalledWith('http://localhost:8042/studies', {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/dicom+json',
+        'x-api-key': 'test-key',
+        'Authorization': 'Bearer test-token'
+      }
+    })
+  })
+
   it('retries transient network failures and succeeds', async () => {
     vi.useFakeTimers()
     const file = createDicomFile()
