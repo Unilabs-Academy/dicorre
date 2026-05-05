@@ -1,0 +1,83 @@
+---
+name: dicorre-webmcp-case-upload
+description: Use this skill when an agent needs to upload, anonymize, send, monitor, or batch-process medical case files through the public Dicorre web app using its WebMCP agent tools. Applies when working with local ZIP/DICOM case folders and the app at https://dicorre.tmcacademy.xyz/.
+---
+
+# Dicorre WebMCP Case Upload
+
+Use the public Dicorre app:
+
+```text
+https://dicorre.tmcacademy.xyz/?agent=1
+```
+
+Do not default to localhost for real uploads. Localhost is only for developing the app.
+
+## Requirements
+
+- Use a WebMCP-capable Chrome build. Current testing has required Chrome 149+ with:
+
+```text
+--enable-features=WebMCPTesting,DevToolsWebMCPSupport
+```
+
+- If `navigator.modelContext` / WebMCP tools are unavailable, stop and report that the browser is not WebMCP-capable. Do not fall back to clicking the UI unless the user explicitly asks.
+- The local agent is responsible for enumerating local case files and attaching them to the browser file input. WebMCP tools cannot read arbitrary local filesystem paths from inside the page.
+
+## Core Loop
+
+Process one case or small case batch at a time. Do not attach a 100GB collection all at once.
+
+1. Open `https://dicorre.tmcacademy.xyz/?agent=1`.
+2. Call `ratatoskr.get_status`; continue only when `configReady` is true and there are no errors.
+3. For each local case:
+   - Call `ratatoskr.clear_all({ "wait": true })` before starting unless intentionally continuing an existing in-page session.
+   - Call `ratatoskr.prepare_case_upload()`.
+   - Attach the local ZIP/DICOM file(s) to the returned `fileInputSelector`, normally `[data-testid="toolbar-file-input"]`, using your browser automation file-upload primitive.
+   - Call `ratatoskr.process_uploaded_cases({ "wait": true, "timeoutMs": 300000 })`.
+   - Call `ratatoskr.list_studies()` and verify studies/files were discovered.
+   - Call `ratatoskr.select_studies({ "mode": "all" })`, unless the user provided a narrower selection rule.
+   - Call `ratatoskr.anonymize_selected({ "wait": true, "timeoutMs": 900000 })`.
+   - Call `ratatoskr.list_studies()` again and verify every intended file is anonymized.
+   - Call `ratatoskr.send_selected({ "confirmNonAnonymized": false, "confirmResend": false, "wait": true, "timeoutMs": 900000 })`.
+   - Call `ratatoskr.get_logs({})` and save the returned logs or a concise summary to the local run manifest.
+   - Call `ratatoskr.clear_all({ "wait": true })` after recording the result.
+
+## Tool Notes
+
+- `ratatoskr.prepare_case_upload` returns the upload selector and accepted formats. It does not upload files by itself.
+- `ratatoskr.process_uploaded_cases` waits for parsing and study grouping after files have been attached.
+- `ratatoskr.list_studies` returns study UID, accession, patient ID, assigned patient ID, file counts, anonymized counts, sent counts, and failure hints.
+- `ratatoskr.select_studies` supports `{ "mode": "all" }` or `{ "studyInstanceUIDs": [...] }`.
+- `ratatoskr.send_selected` intentionally refuses unsafe sends unless explicit confirmation flags are true.
+- `ratatoskr.wait_for_idle` is useful between steps if the browser automation layer is uncertain whether the app has settled.
+- `ratatoskr.clear_all` clears loaded studies, progress state, session state, and browser-backed file state.
+
+## Safety Rules
+
+- Never send non-anonymized files unless the user explicitly instructs you to do so. Keep `confirmNonAnonymized: false` by default.
+- Never resend already-sent studies unless the user explicitly instructs you to do so. Keep `confirmResend: false` by default.
+- Do not expose raw DICOM bytes, patient identifiers, auth headers, or full metadata dumps in chat output.
+- Keep durable local records in a manifest, not in the conversation. A JSONL manifest is usually best.
+- If anonymization, sending, or clearing times out, record the case as failed or partial and continue only if the user requested best-effort batch processing.
+
+## Manifest Fields
+
+For each case, record at least:
+
+```json
+{
+  "casePath": "/local/path/to/case.zip",
+  "startedAt": "ISO timestamp",
+  "finishedAt": "ISO timestamp",
+  "status": "success | partial | failed | skipped",
+  "studyCount": 0,
+  "fileCount": 0,
+  "anonymizedCount": 0,
+  "sentCount": 0,
+  "errors": [],
+  "logSummary": []
+}
+```
+
+Use the manifest for resume/skip decisions. Before retrying a case, inspect the prior manifest status and only skip entries that were clearly successful.
