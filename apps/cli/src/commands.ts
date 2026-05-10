@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { Effect } from 'effect'
+import { loadNodePlugins } from '@dicorre/plugins/node'
 import { Anonymizer } from '@dicorre/shared/services/anonymizer'
 import { ConfigService } from '@dicorre/shared/services/config'
 import type { AppConfig } from '@dicorre/shared/services/config/schema'
@@ -8,7 +9,10 @@ import { DicomProcessor } from '@dicorre/shared/services/dicomProcessor'
 import { DicomSender } from '@dicorre/shared/services/dicomSender'
 import { DownloadService } from '@dicorre/shared/services/downloadService'
 import { FileStorage } from '@dicorre/shared/services/fileStorage'
-import type { DicomFile } from '@dicorre/shared/types/dicom'
+import { PluginRegistry } from '@dicorre/shared/services/pluginRegistry'
+import type { DicomFile, DicomStudy } from '@dicorre/shared/types/dicom'
+import type { HookPlugin } from '@dicorre/shared/types/plugins'
+import { isFileFormatPlugin, isHookPlugin } from '@dicorre/shared/types/plugins'
 import { makeCliLayer } from './layers'
 import { processInputPaths } from './fileProcessing'
 import {
@@ -63,6 +67,33 @@ export interface ProjectSummary {
   }
 }
 
+export interface CliPluginContext {
+  readonly summary: string
+  readonly docs?: string
+  readonly examples?: string[]
+  readonly notes?: string[]
+}
+
+export interface PluginSummary {
+  readonly id: string
+  readonly name: string
+  readonly version: string
+  readonly type: 'file-format' | 'hook'
+  readonly enabled: boolean
+  readonly description: string
+  readonly supportedExtensions?: string[]
+  readonly supportedMimeTypes?: string[]
+  readonly hooks?: string[]
+  readonly settings?: Record<string, unknown>
+  readonly cli?: CliPluginContext
+}
+
+export interface PluginsSummary {
+  readonly plugins: PluginSummary[]
+  readonly supportedExtensions: string[]
+  readonly supportedMimeTypes: string[]
+}
+
 const resolveCliPaths = (workspaceArg?: string, stateArg?: string): CliPaths => {
   const workspace = path.resolve(workspaceArg ?? '.dicorre')
   return {
@@ -82,6 +113,42 @@ const loadConfigIfProvided = (configPath?: string) =>
     yield* configService.loadConfig(JSON.parse(raw))
   })
 
+const loadCliPlugins = () =>
+  Effect.gen(function* () {
+    const configService = yield* ConfigService
+    const config = yield* configService.getCurrentConfig
+    const pluginConfig = config.plugins
+      ? { enabled: [...config.plugins.enabled], settings: config.plugins.settings }
+      : { enabled: [] }
+    return yield* loadNodePlugins(pluginConfig)
+  })
+
+const activeHookNames = (plugin: HookPlugin): string[] =>
+  (['beforeProcess', 'afterProcess', 'beforeAnonymize', 'afterAnonymize', 'beforeSend', 'afterSend', 'onSendError'] as const)
+    .filter((name) => !!plugin.hooks[name])
+
+const runCliHook = <R>(
+  pluginId: string,
+  hookName: string,
+  effect: Effect.Effect<void, unknown, R>,
+): Effect.Effect<void, never, R> => {
+  let originalLog: typeof console.log | undefined
+  return Effect.sync(() => {
+    originalLog = console.log
+    console.log = (...args: unknown[]) => console.error(...args)
+  }).pipe(
+    Effect.zipRight(effect),
+    Effect.ensuring(Effect.sync(() => {
+      if (originalLog) console.log = originalLog
+    })),
+    Effect.catchAll((error) =>
+      Effect.sync(() => {
+        console.error(`Plugin ${pluginId} ${hookName} hook failed:`, error)
+      }),
+    ),
+  )
+}
+
 export const ingest = async (
   inputPaths: string[],
   options: {
@@ -95,6 +162,7 @@ export const ingest = async (
   const paths = resolveCliPaths(options.workspace, options.state)
   const effect = Effect.gen(function* () {
     yield* loadConfigIfProvided(options.config)
+    yield* loadCliPlugins()
 
     const processor = yield* DicomProcessor
     const configService = yield* ConfigService
@@ -244,27 +312,98 @@ export const send = async (
   const { state, selected } = await loadSelectedStudies(paths, studyIds)
   const effect = Effect.gen(function* () {
     yield* loadConfigIfProvided(options.config)
+    yield* loadCliPlugins()
 
     const sender = yield* DicomSender
     const configService = yield* ConfigService
+    const registry = yield* PluginRegistry
     const config = yield* configService.getServerConfig
+    const hooks = yield* registry.getHookPlugins()
     let succeeded = 0
     let failed = 0
     let skipped = 0
     const sentIds = new Set<string>()
 
     for (const study of selected) {
-      const result = yield* sender.sendFiles(flattenStudyFiles([study]), config, options.concurrency ?? 3)
+      for (const plugin of hooks) {
+        if (plugin.hooks.beforeSend) {
+          yield* runCliHook(plugin.id, 'beforeSend', plugin.hooks.beforeSend(study) as Effect.Effect<void, unknown, ConfigService>)
+        }
+      }
+
+      const result = yield* sender.sendFiles(flattenStudyFiles([study]), config, options.concurrency ?? 3).pipe(
+        Effect.catchAll((error) =>
+          Effect.gen(function* () {
+            const err = error instanceof Error ? error : new Error(String(error))
+            for (const plugin of hooks) {
+              if (plugin.hooks.onSendError) {
+                yield* runCliHook(plugin.id, 'onSendError', plugin.hooks.onSendError(study, err) as Effect.Effect<void, unknown, ConfigService>)
+              }
+            }
+            return yield* Effect.fail(error)
+          }),
+        ),
+      )
       succeeded += result.succeededCount
       failed += result.failedCount
       skipped += result.skippedCount
       for (const success of result.succeeded) sentIds.add(success.file.id)
+
+      if (result.failedCount === 0) {
+        const sentStudy: DicomStudy = {
+          ...study,
+          series: study.series.map((series) => ({
+            ...series,
+            files: series.files.filter((file) => sentIds.has(file.id)),
+          })),
+        }
+        for (const plugin of hooks) {
+          if (plugin.hooks.afterSend) {
+            yield* runCliHook(plugin.id, 'afterSend', plugin.hooks.afterSend(sentStudy) as Effect.Effect<void, unknown, ConfigService>)
+          }
+        }
+      }
     }
 
     yield* Effect.promise(() => saveState(paths.state, markFilesSent(state, sentIds)))
     return { studies: selected.length, succeeded, failed, skipped }
   })
 
+  return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
+}
+
+export const listPlugins = async (
+  options: { readonly workspace?: string; readonly config?: string } = {},
+): Promise<PluginsSummary> => {
+  const paths = resolveCliPaths(options.workspace)
+  const effect = Effect.gen(function* () {
+    yield* loadConfigIfProvided(options.config)
+    yield* loadCliPlugins()
+    const registry = yield* PluginRegistry
+    const plugins = yield* registry.getAllPlugins()
+    const supportedExtensions = yield* registry.getSupportedExtensions()
+    const supportedMimeTypes = yield* registry.getSupportedMimeTypes()
+    const summaries: PluginSummary[] = []
+
+    for (const plugin of plugins) {
+      const settings = yield* registry.getPluginSettings(plugin.id)
+      summaries.push({
+        id: plugin.id,
+        name: plugin.name,
+        version: plugin.version,
+        type: plugin.type,
+        enabled: plugin.enabled === true,
+        description: plugin.description,
+        supportedExtensions: isFileFormatPlugin(plugin) ? [...plugin.supportedExtensions] : undefined,
+        supportedMimeTypes: isFileFormatPlugin(plugin) ? [...(plugin.supportedMimeTypes ?? [])] : undefined,
+        hooks: isHookPlugin(plugin) ? activeHookNames(plugin) : undefined,
+        settings,
+        cli: (plugin as typeof plugin & { cli?: CliPluginContext }).cli,
+      })
+    }
+
+    return { plugins: summaries, supportedExtensions, supportedMimeTypes }
+  })
   return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
 }
 

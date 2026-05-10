@@ -19,12 +19,20 @@ const makeWorkspace = async () => {
 
 const makeDicomWebServer = async () => {
   let posts = 0
+  let notifications = 0
   const server = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/dicom-web/studies') {
       posts++
       req.resume()
       res.writeHead(200, { 'content-type': 'application/dicom+json' })
       res.end('{}')
+      return
+    }
+    if (req.method === 'POST' && req.url === '/sent') {
+      notifications++
+      req.resume()
+      res.writeHead(204)
+      res.end()
       return
     }
     res.writeHead(404)
@@ -36,8 +44,12 @@ const makeDicomWebServer = async () => {
   if (!address || typeof address === 'string') throw new Error('Failed to bind test server')
   return {
     url: `http://127.0.0.1:${address.port}/dicom-web`,
+    sentUrl: `http://127.0.0.1:${address.port}/sent`,
     get posts() {
       return posts
+    },
+    get notifications() {
+      return notifications
     },
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve())
@@ -60,6 +72,7 @@ describe('dicorre CLI', () => {
     expect(help.docs).toBe('docs/cli.md')
     expect(help.commands.map((command) => command.name)).toContain('ingest')
     expect(help.commands.map((command) => command.name)).toContain('send')
+    expect(help.commands.map((command) => command.name)).toContain('plugins')
     expect(help.usage.some((usage) => usage.includes('dicorre ingest'))).toBe(true)
 
     const ingestHelp = await runCli(['ingest', '--help']) as {
@@ -105,6 +118,8 @@ describe('dicorre CLI', () => {
       url: server.url,
       timeout: 5000,
     }
+    config.plugins.settings['sent-notifier'].url = server.sentUrl
+    config.plugins.settings['sent-notifier'].authHeaderValue = 'test-key'
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
 
     try {
@@ -120,6 +135,7 @@ describe('dicorre CLI', () => {
 
       expect(send).toMatchObject({ succeeded: 1, failed: 0, skipped: 0 })
       expect(server.posts).toBe(1)
+      expect(server.notifications).toBe(1)
     } finally {
       await server.close()
     }
@@ -223,7 +239,29 @@ describe('dicorre CLI', () => {
     expect(state.studies[0].customFields['Study Description']).toBe('CLI Override')
   })
 
-  it('accepts web-supported media inputs through Node conversion path', async () => {
+  it('lists enabled CLI plugins and their agent-facing context', async () => {
+    const workspace = await makeWorkspace()
+
+    const plugins = await runCli([
+      'plugins',
+      '--workspace',
+      workspace,
+    ]) as {
+      plugins: Array<{ id: string; enabled: boolean; cli?: { summary: string }; supportedExtensions?: string[]; hooks?: string[] }>
+      supportedExtensions: string[]
+    }
+
+    const image = plugins.plugins.find((plugin) => plugin.id === 'image-converter')
+    expect(image).toMatchObject({ enabled: true })
+    expect(image?.supportedExtensions).toContain('.jpg')
+    expect(image?.cli?.summary).toContain('sharp')
+    expect(plugins.supportedExtensions).toContain('.pdf')
+
+    const notifier = plugins.plugins.find((plugin) => plugin.id === 'sent-notifier')
+    expect(notifier?.hooks).toContain('afterSend')
+  })
+
+  it('accepts web-supported media inputs through Node plugin conversion path', async () => {
     const workspace = await makeWorkspace()
 
     const ingest = await runCli([
@@ -236,7 +274,7 @@ describe('dicorre CLI', () => {
       workspace,
     ]) as { filesParsed: number; studies: number }
 
-    expect(ingest.filesParsed).toBe(4)
+    expect(ingest.filesParsed).toBeGreaterThan(4)
     expect(ingest.studies).toBe(4)
 
     const studies = await runCli(['studies', '--workspace', workspace]) as Array<{ studyInstanceUID: string }>
@@ -250,7 +288,22 @@ describe('dicorre CLI', () => {
 
     const afterMerge = await runCli(['studies', '--workspace', workspace]) as Array<{ files: number }>
     expect(afterMerge).toHaveLength(1)
-    expect(afterMerge[0].files).toBe(4)
+    expect(afterMerge[0].files).toBe(ingest.filesParsed)
+  })
+
+  it('honors --no-converted for plugin-backed media files', async () => {
+    const workspace = await makeWorkspace()
+
+    const ingest = await runCli([
+      'ingest',
+      webFixture('src/plugins/imageConverter/test-data/red-square.jpg'),
+      '--workspace',
+      workspace,
+      '--no-converted',
+    ]) as { filesParsed: number; studies: number }
+
+    expect(ingest.filesParsed).toBe(0)
+    expect(ingest.studies).toBe(0)
   })
 
   it('validates config files and rejects invalid config', async () => {

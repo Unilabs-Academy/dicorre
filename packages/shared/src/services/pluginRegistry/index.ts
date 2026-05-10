@@ -22,9 +22,9 @@ export class PluginRegistry extends Context.Tag("PluginRegistry")<
   }
 >() { }
 
-export const PluginRegistryLive = Layer.succeed(
+export const PluginRegistryLive = Layer.sync(
   PluginRegistry,
-  (() => {
+  () => {
     const plugins = new Map<string, Plugin>()
     const enabledPlugins = new Set<string>()
     let pluginConfig: PluginConfig = { enabled: [] }
@@ -38,14 +38,12 @@ export const PluginRegistryLive = Layer.succeed(
           }))
         }
 
-        console.log(`Registering plugin: ${plugin.name} (${plugin.id}) v${plugin.version}`)
         plugins.set(plugin.id, plugin)
 
         // Check if plugin should be enabled based on config
         if (pluginConfig.enabled.includes(plugin.id)) {
           enabledPlugins.add(plugin.id)
           plugin.enabled = true
-          console.log(`Plugin ${plugin.id} auto-enabled from config`)
         } else {
           // Explicitly mark as disabled so filters don't treat undefined as enabled
           plugin.enabled = false
@@ -63,7 +61,6 @@ export const PluginRegistryLive = Layer.succeed(
 
         plugins.delete(pluginId)
         enabledPlugins.delete(pluginId)
-        console.log(`Unregistered plugin: ${pluginId}`)
       })
 
     const getPlugin = (pluginId: string): Effect.Effect<Plugin | undefined, never> =>
@@ -97,7 +94,6 @@ export const PluginRegistryLive = Layer.succeed(
             // Verify with canProcess method
             const canProcess = yield* plugin.canProcess(file)
             if (canProcess) {
-              console.log(`Found plugin ${plugin.id} for file ${file.name}`)
               return plugin
             }
           }
@@ -107,7 +103,6 @@ export const PluginRegistryLive = Layer.succeed(
             if (plugin.supportedMimeTypes.includes(file.type)) {
               const canProcess = yield* plugin.canProcess(file)
               if (canProcess) {
-                console.log(`Found plugin ${plugin.id} for file ${file.name} by MIME type`)
                 return plugin
               }
             }
@@ -145,7 +140,6 @@ export const PluginRegistryLive = Layer.succeed(
 
         enabledPlugins.add(pluginId)
         plugin.enabled = true
-        console.log(`Enabled plugin: ${pluginId}`)
       })
 
     const disablePlugin = (pluginId: string): Effect.Effect<void, PluginErrorType> =>
@@ -160,7 +154,6 @@ export const PluginRegistryLive = Layer.succeed(
 
         enabledPlugins.delete(pluginId)
         plugin.enabled = false
-        console.log(`Disabled plugin: ${pluginId}`)
       })
 
     const loadPluginConfig = (config: PluginConfig): Effect.Effect<void, PluginErrorType> =>
@@ -177,8 +170,6 @@ export const PluginRegistryLive = Layer.succeed(
             plugin.enabled = false
           }
         }
-
-        console.log(`Loaded plugin config: ${config.enabled.length} plugins enabled`)
       })
 
     const getPluginSettings = (pluginId: string): Effect.Effect<Record<string, any> | undefined, never> =>
@@ -199,5 +190,5 @@ export const PluginRegistryLive = Layer.succeed(
       loadPluginConfig,
       getPluginSettings
     } as const
-  })()
+  }
 )

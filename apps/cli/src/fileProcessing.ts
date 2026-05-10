@@ -1,13 +1,15 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { File as NodeFile } from 'node:buffer'
+import { createHash } from 'node:crypto'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { Effect } from 'effect'
 import JSZip from 'jszip'
+import { createDefaultConversionMetadata } from '@dicorre/plugins/common/metadata'
+import { PluginRegistry } from '@dicorre/shared/services/pluginRegistry'
 import type { FileHeader, UnrarError } from 'node-unrar-js'
-import type { DicomFile, DicomMetadata } from '@dicorre/shared/types/dicom'
+import type { DicomFile } from '@dicorre/shared/types/dicom'
 import { FileHandlerError, type FileHandlerErrorType } from '@dicorre/shared/types/effects'
-import { DicomDatasetBuilder } from '@dicorre/shared/utils/dicomDatasetBuilder'
 
 export interface ProcessPathOptions {
   readonly includeConverted?: boolean
@@ -59,7 +61,6 @@ const SKIP_EXTENSIONS = new Set([
   '.zip',
 ])
 
-const CONVERTIBLE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.bmp', '.pdf', '.mp4', '.webm', '.ogv'])
 const SYSTEM_FILE_PATTERNS = ['.ds_store', 'thumbs.db', 'desktop.ini', '.git', '.svn']
 
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
@@ -86,75 +87,6 @@ const shouldSkipArchiveEntry = (fileName: string): boolean => {
   return ext.length > 0 && SKIP_EXTENSIONS.has(ext)
 }
 
-const defaultConversionMetadata = (fileName: string, kind: string): DicomMetadata => {
-  const base = path.basename(fileName)
-  const uidSuffix = randomUUID().replace(/-/g, '').slice(0, 24)
-  return {
-    patientName: 'Converted^File',
-    patientId: `CONV-${Date.now()}`,
-    studyInstanceUID: `2.25.${BigInt(`0x${uidSuffix}`).toString()}`,
-    seriesInstanceUID: `2.25.${BigInt(`0x${uidSuffix.slice(0, 16)}`).toString()}`,
-    sopInstanceUID: `2.25.${BigInt(`0x${uidSuffix.slice(8, 24)}`).toString()}`,
-    studyDate: new Date().toISOString().slice(0, 10).replace(/-/g, ''),
-    modality: 'SC',
-    studyDescription: base.slice(0, 64),
-    seriesDescription: `${kind} Conversion`,
-    instanceNumber: 1,
-    transferSyntaxUID: '1.2.840.10008.1.2.1',
-  }
-}
-
-const createPlaceholderConvertedDicom = (
-  fileName: string,
-  sourceSize: number,
-): Effect.Effect<DicomFile, FileHandlerErrorType> =>
-  Effect.gen(function* () {
-    const ext = extensionOf(fileName)
-    const kind = ext === '.pdf' ? 'PDF' : ext === '.mp4' || ext === '.webm' || ext === '.ogv' ? 'Video' : 'Image'
-    const width = 64
-    const height = 64
-    const pixelData = new Uint8Array(width * height * 3)
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const offset = (y * width + x) * 3
-        pixelData[offset] = (x * 4) % 256
-        pixelData[offset + 1] = (y * 4) % 256
-        pixelData[offset + 2] = kind === 'PDF' ? 220 : kind === 'Video' ? 120 : 60
-      }
-    }
-
-    const buffer = yield* Effect.tryPromise({
-      try: () => DicomDatasetBuilder.createDicomBuffer(
-        width,
-        height,
-        pixelData,
-        defaultConversionMetadata(fileName, kind),
-        {
-          samplesPerPixel: 3,
-          photometricInterpretation: 'RGB',
-          bitsAllocated: 8,
-          bitsStored: 8,
-          highBit: 7,
-          pixelRepresentation: 0,
-          planarConfiguration: 0,
-        },
-      ),
-      catch: (error) => new FileHandlerError({
-        message: `Failed to convert ${fileName} to DICOM: ${error instanceof Error ? error.message : String(error)}`,
-        fileName,
-        cause: error,
-      }),
-    })
-
-    return {
-      id: hashId(`${fileName}:${sourceSize}:${buffer.byteLength}`),
-      fileName: path.basename(fileName).replace(/\.[^.]+$/u, '.dcm'),
-      fileSize: buffer.byteLength,
-      arrayBuffer: buffer,
-      anonymized: false,
-    }
-  })
-
 const dicomFileFromBuffer = (fileName: string, sourceKey: string, bytes: Uint8Array): DicomFile => {
   const arrayBuffer = toArrayBuffer(bytes)
   return {
@@ -166,23 +98,85 @@ const dicomFileFromBuffer = (fileName: string, sourceKey: string, bytes: Uint8Ar
   }
 }
 
-const readPathFile = (filePath: string, options: ProcessPathOptions): Effect.Effect<DicomFile[], FileHandlerErrorType> =>
+const mimeTypeForExtension = (ext: string): string => {
+  switch (ext) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.png':
+      return 'image/png'
+    case '.bmp':
+      return 'image/bmp'
+    case '.pdf':
+      return 'application/pdf'
+    case '.mp4':
+      return 'video/mp4'
+    case '.webm':
+      return 'video/webm'
+    case '.ogv':
+      return 'video/ogg'
+    default:
+      return ''
+  }
+}
+
+const convertWithPlugin = (filePath: string): Effect.Effect<DicomFile[], FileHandlerErrorType, PluginRegistry> =>
+  Effect.gen(function* () {
+    const registry = yield* PluginRegistry
+    const bytes = yield* Effect.tryPromise({
+      try: () => readFile(filePath),
+      catch: (error) => new FileHandlerError({ message: `Failed to read file: ${filePath}`, fileName: filePath, cause: error }),
+    })
+    const fileName = path.basename(filePath)
+    const nodeFile = new NodeFile([bytes], fileName, { type: mimeTypeForExtension(extensionOf(filePath)) }) as unknown as File
+    const plugin = yield* registry
+      .getPluginForFile(nodeFile)
+      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+
+    if (!plugin) return []
+
+    const pluginSettings = yield* registry
+      .getPluginSettings(plugin.id)
+      .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+    const settings = pluginSettings as Record<string, unknown> | undefined
+    const metadata = createDefaultConversionMetadata(fileName, {
+      modality: typeof settings?.defaultModality === 'string' ? settings.defaultModality : undefined,
+      seriesDescription:
+        typeof settings?.seriesDescription === 'string'
+          ? settings.seriesDescription
+          : typeof settings?.defaultSeriesDescription === 'string'
+            ? settings.defaultSeriesDescription
+            : undefined,
+    })
+
+    return yield* plugin.convertToDicom(nodeFile, metadata, pluginSettings).pipe(
+      Effect.mapError((error) => new FileHandlerError({
+        message: `Plugin ${plugin.id} failed to convert ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+        fileName: filePath,
+        cause: error,
+      })),
+    )
+  })
+
+const readPathFile = (filePath: string, options: ProcessPathOptions): Effect.Effect<DicomFile[], FileHandlerErrorType, PluginRegistry> =>
   Effect.gen(function* () {
     const ext = extensionOf(filePath)
     if (ext === '.zip') return yield* extractZip(filePath, options)
     if (ext === '.rar') return yield* extractRar(filePath, options)
 
-    if (CONVERTIBLE_EXTENSIONS.has(ext)) {
-      if (!options.includeConverted) return []
-      const info = yield* Effect.tryPromise({
-        try: () => stat(filePath),
-        catch: (error) => new FileHandlerError({ message: `Failed to stat ${filePath}`, fileName: filePath, cause: error }),
-      })
-      return [yield* createPlaceholderConvertedDicom(filePath, info.size)]
+    if (!options.includeConverted) {
+      return !looksLikeDicomName(filePath) || isSystemFile(filePath) ? [] : yield* readDicomPathFile(filePath)
     }
 
-    if (!looksLikeDicomName(filePath) || isSystemFile(filePath)) return []
+    const converted = yield* convertWithPlugin(filePath)
+    if (converted.length > 0) return converted
 
+    if (!looksLikeDicomName(filePath) || isSystemFile(filePath)) return []
+    return yield* readDicomPathFile(filePath)
+  })
+
+const readDicomPathFile = (filePath: string): Effect.Effect<DicomFile[], FileHandlerErrorType> =>
+  Effect.gen(function* () {
     const bytes = yield* Effect.tryPromise({
       try: () => readFile(filePath),
       catch: (error) => new FileHandlerError({ message: `Failed to read file: ${filePath}`, fileName: filePath, cause: error }),
@@ -215,7 +209,7 @@ const collectInputFiles = (inputPath: string): Effect.Effect<string[], FileHandl
 export const processInputPaths = (
   inputPaths: string[],
   options: ProcessPathOptions = {},
-): Effect.Effect<DicomFile[], FileHandlerErrorType> =>
+): Effect.Effect<DicomFile[], FileHandlerErrorType, PluginRegistry> =>
   Effect.gen(function* () {
     const files: DicomFile[] = []
     for (const inputPath of inputPaths) {

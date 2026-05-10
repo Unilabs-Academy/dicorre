@@ -5,6 +5,9 @@
       "path": "./packages/shared"
     },
     {
+      "path": "./packages/plugins"
+    },
+    {
       "path": "./apps/web/tsconfig.node.json"
     },
     {

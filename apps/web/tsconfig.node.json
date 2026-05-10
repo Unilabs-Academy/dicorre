@@ -14,6 +14,11 @@
 
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@dicorre/plugins": ["../../packages/plugins/src/index.ts"],
+      "@dicorre/plugins/*": ["../../packages/plugins/src/*"]
+    }
   }
 }

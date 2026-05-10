@@ -45,6 +45,13 @@ Per-command `--help` returns only that command's entry and does not execute the 
 dicorre send --help
 ```
 
+Use `plugins` when an agent needs to know which optional capabilities are active:
+
+```bash
+dicorre plugins
+dicorre plugins --config project.config.json
+```
+
 ## Workspace Model
 
 Most commands operate on a workspace. By default the workspace is `.dicorre`, and the state file is `<workspace>/state.json`.
@@ -112,7 +119,7 @@ dicorre ingest <paths...> [--workspace <dir>] [--state <file>] [--config <config
 
 Supported direct inputs include DICOM files, ZIP, RAR, directories, JPG/JPEG, PNG, BMP, PDF, MP4, WebM, and OGV. ZIP/RAR archives are filtered so non-DICOM files and pseudo-DICOM entries without required identity tags are skipped.
 
-`--no-converted` disables Node-side placeholder conversion for media formats and keeps ingestion to DICOM/archive inputs.
+Media conversion is plugin-based. Enabled image, PDF, and video plugins create real Secondary Capture DICOM files using decoded pixels, rendered PDF pages, or sampled video frames. `--no-converted` disables plugin-based media conversion and keeps ingestion to DICOM/archive inputs.
 
 Output:
 
@@ -134,6 +141,46 @@ dicorre studies [--workspace <dir>] [--state <file>]
 ```
 
 Output is an array. Use `studyInstanceUID` or `id` values with study-selection commands.
+
+### `plugins`
+
+List registered CLI plugins, enabled state, active settings, hook names, supported extensions, supported MIME types, and CLI-specific context.
+
+```bash
+dicorre plugins [--workspace <dir>] [--config <config.json>]
+```
+
+Output:
+
+```json
+{
+  "plugins": [
+    {
+      "id": "image-converter",
+      "name": "Image to DICOM Converter",
+      "type": "file-format",
+      "enabled": true,
+      "supportedExtensions": [".jpg", ".jpeg", ".png", ".bmp"],
+      "cli": {
+        "summary": "Uses sharp to decode image pixels and writes real Secondary Capture DICOM instances.",
+        "docs": "docs/cli.md#plugins"
+      }
+    }
+  ],
+  "supportedExtensions": [".bmp", ".dcm", ".dicom", ".jpg", ".jpeg", ".mp4", ".pdf", ".png", ".rar", ".webm", ".zip"],
+  "supportedMimeTypes": ["application/pdf", "application/zip", "image/jpeg", "image/png", "video/mp4"]
+}
+```
+
+The CLI loads plugins from the active config's `plugins.enabled` list, matching the web app's plugin IDs:
+
+- `image-converter`: converts JPG/JPEG, PNG, and BMP with `sharp`.
+- `pdf-converter`: renders each PDF page with PDF.js and native canvas.
+- `video-converter`: samples MP4, WebM, and OGV frames with the packaged ffmpeg binary.
+- `send-logger`: exposes `beforeSend`, `afterSend`, and `onSendError` hooks.
+- `sent-notifier`: POSTs `study_instance_uid` and project params after successful sends.
+
+Plugin settings come from `plugins.settings.<plugin-id>` in the active config. File-format plugins are used by `ingest`; send hooks are used by `send`. Hook failures are reported to stderr and do not replace the command's JSON stdout.
 
 ### `anonymize`
 
@@ -172,6 +219,8 @@ dicorre send [--study <all|uid[,uid]>] [--workspace <dir>] [--state <file>] [--c
 ```
 
 The DICOMweb endpoint comes from the active config's `dicomServer.url`.
+
+Enabled send-hook plugins run around each selected study. The CLI supports the same send hook points as the web app: `beforeSend`, `afterSend`, and `onSendError`.
 
 Output:
 
@@ -266,6 +315,24 @@ Use this when separate inputs should be treated as a single study for downstream
 
 The default config lives at `packages/shared/app.config.json`. See [configuration.md](configuration.md) for the full config schema and examples.
 
+Plugin enablement lives in the same config:
+
+```json
+{
+  "plugins": {
+    "enabled": ["image-converter", "pdf-converter", "video-converter", "send-logger"],
+    "settings": {
+      "video-converter": {
+        "intervalMs": 1000,
+        "maxFrames": 500,
+        "outputMaxWidth": 1920,
+        "outputMaxHeight": 1080
+      }
+    }
+  }
+}
+```
+
 For sending, set `dicomServer.url` to the DICOMweb base URL, for example:
 
 ```json
@@ -280,8 +347,9 @@ For sending, set `dicomServer.url` to the DICOMweb base URL, for example:
 ## Agent Checklist
 
 1. Run `dicorre discover` to inspect commands and examples.
-2. Pick or create a dedicated `--workspace`.
-3. Validate config with `config-validate` before using it.
-4. Run `ingest`, then `studies` to get study IDs.
-5. Use `anonymize`, `download`, and `send` with `--study all` or explicit study UIDs.
-6. Read JSON outputs instead of scraping logs.
+2. Run `dicorre plugins` with the intended config to inspect enabled plugins and conversion support.
+3. Pick or create a dedicated `--workspace`.
+4. Validate config with `config-validate` before using it.
+5. Run `ingest`, then `studies` to get study IDs.
+6. Use `anonymize`, `download`, and `send` with `--study all` or explicit study UIDs.
+7. Read JSON outputs instead of scraping logs.

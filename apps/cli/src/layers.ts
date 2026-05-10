@@ -4,6 +4,7 @@ import { ConfigServiceLive } from '@dicorre/shared/services/config'
 import { DicomProcessorLive } from '@dicorre/shared/services/dicomProcessor'
 import { DicomSenderLive } from '@dicorre/shared/services/dicomSender'
 import { DownloadServiceLive } from '@dicorre/shared/services/downloadService'
+import { PluginRegistryLive } from '@dicorre/shared/services/pluginRegistry'
 import { StudyLoggerLive } from '@dicorre/shared/services/studyLogger'
 import { FileSystemStorageLive } from './services/fileSystemStorage'
 import { JsonConfigPersistenceLive, JsonStudyLoggerPersistenceLive } from './services/jsonPersistence'
@@ -19,6 +20,7 @@ export const makeCliLayer = (workspaceDir: string) => {
     logger,
     DicomProcessorLive,
     DicomSenderLive,
+    PluginRegistryLive,
     AnonymizerLive.pipe(Layer.provide(DicomProcessorLive)),
     DownloadServiceLive.pipe(Layer.provide(storage)),
   )

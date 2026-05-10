@@ -80,7 +80,7 @@ describe('SendLogger Plugin', () => {
       )
     })
 
-    it.only('should log send errors', async () => {
+    it('should log send errors', async () => {
       const error = new Error('Network connection failed')
 
       await Effect.runPromise(sendLoggerPlugin.hooks.onSendError!(mockStudy, error) as Effect.Effect<void, PluginError, never>)

@@ -12,6 +12,14 @@ export interface Plugin {
   description: string
   type: 'file-format' | 'hook'
   enabled?: boolean
+  cli?: PluginCliContext
+}
+
+export interface PluginCliContext {
+  summary: string
+  docs?: string
+  examples?: string[]
+  notes?: string[]
 }
 
 /**

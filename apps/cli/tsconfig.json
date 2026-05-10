@@ -11,10 +11,13 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "@dicorre/cli/*": ["./src/*"]
+      "@dicorre/cli/*": ["./src/*"],
+      "@dicorre/plugins": ["../../packages/plugins/src/index.ts"],
+      "@dicorre/plugins/*": ["../../packages/plugins/src/*"]
     }
   },
   "references": [
-    { "path": "../../packages/shared" }
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/plugins" }
   ]
 }

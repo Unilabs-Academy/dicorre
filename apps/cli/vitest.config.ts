@@ -11,6 +11,7 @@ export default defineConfig({
     alias: {
       '@dicorre/cli': fileURLToPath(new URL('./src', import.meta.url)),
       '@dicorre/shared': fileURLToPath(new URL('../../packages/shared/src', import.meta.url)),
+      '@dicorre/plugins': fileURLToPath(new URL('../../packages/plugins/src', import.meta.url)),
     },
   },
 })

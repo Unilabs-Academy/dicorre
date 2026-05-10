@@ -22,7 +22,8 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      '@dicorre/plugins': fileURLToPath(new URL('../../packages/plugins/src', import.meta.url)),
     },
   },
   build: {

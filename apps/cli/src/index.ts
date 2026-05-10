@@ -8,6 +8,7 @@ import {
   download,
   ingest,
   listStudies,
+  listPlugins,
   loadConfig,
   send,
   setCustomField,
@@ -77,7 +78,7 @@ const COMMANDS: CommandHelp[] = [
       ...GLOBAL_OPTIONS,
       CONFIG_OPTION,
       CONCURRENCY_OPTION,
-      { name: '--no-converted', description: 'Skip Node-side placeholder conversion for JPG, PNG, BMP, PDF, MP4, WebM, and OGV inputs.' },
+      { name: '--no-converted', description: 'Skip plugin-based conversion for JPG, PNG, BMP, PDF, MP4, WebM, and OGV inputs.' },
     ],
     examples: [
       'dicorre ingest case.zip --workspace .dicorre/case-001',
@@ -85,6 +86,14 @@ const COMMANDS: CommandHelp[] = [
       'dicorre ingest report.pdf image.png --no-converted',
     ],
     output: 'JSON summary with filesRead, filesParsed, studies, and statePath.',
+  },
+  {
+    name: 'plugins',
+    summary: 'List active CLI plugins, settings, hooks, and supported input types.',
+    usage: 'dicorre plugins [--workspace <dir>] [--config <config.json>]',
+    options: [GLOBAL_OPTIONS[0], CONFIG_OPTION],
+    examples: ['dicorre plugins', 'dicorre plugins --config project.config.json'],
+    output: 'JSON catalog of registered CLI plugins with enabled state, settings, CLI context, hooks, and supported extensions.',
   },
   {
     name: 'studies',
@@ -296,6 +305,8 @@ export const runCli = async (argv: string[]): Promise<unknown> => {
       })
     case 'studies':
       return listStudies({ workspace, state })
+    case 'plugins':
+      return listPlugins({ workspace, config })
     case 'anonymize':
       return anonymize(asStudies(parsed.options.study), { workspace, state, config, concurrency })
     case 'download':
@@ -333,11 +344,16 @@ export const runCli = async (argv: string[]): Promise<unknown> => {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const originalLog = console.log
+  console.log = (...args: unknown[]) => console.error(...args)
+
   runCli(process.argv.slice(2))
     .then((result) => {
+      console.log = originalLog
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
     })
     .catch((error) => {
+      console.log = originalLog
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
       process.exitCode = 1
     })
