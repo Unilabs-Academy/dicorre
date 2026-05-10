@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import path from 'path'
+import { waitForAppReady } from './helpers'
 
 test.describe('WebMCP agent mode', () => {
   const appUrl = 'http://127.0.0.1:5173/?agent=1'
@@ -109,6 +110,7 @@ test.describe('WebMCP agent mode', () => {
 
     const status = page.getByTestId('webmcp-agent-status')
     await expect(status).toContainText('ratatoskr.get_status')
+    await waitForAppReady(page)
 
     const toolNames = await page.evaluate(() => Array.from((window as any).__webMcpTestTools.keys()))
     expect(toolNames).toEqual(expectedToolNames)
@@ -141,6 +143,7 @@ test.describe('WebMCP agent mode', () => {
   test('loads private config and returns redacted summary', async ({ page }) => {
     await installWebMcpShim(page)
     await page.goto(appUrl)
+    await waitForAppReady(page)
 
     const loaded = await executeShimTool(page, 'ratatoskr.load_config', {
       config: validAgentConfig,
@@ -214,6 +217,7 @@ test.describe('WebMCP agent mode', () => {
     })
     expect(loaded.found).toBe(true)
     expect(loaded.output.ok).toBe(true)
+    await waitForAppReady(page)
 
     const prepare = await executeShimTool(page, 'ratatoskr.prepare_case_upload')
     expect(prepare.found).toBe(true)
@@ -259,6 +263,7 @@ test.describe('WebMCP agent mode', () => {
 
     const status = page.getByTestId('webmcp-agent-status')
     await expect(status).toContainText('ratatoskr.get_status')
+    await waitForAppReady(page)
 
     const result = await page.evaluate(async () => {
       const testing = (navigator as any).modelContextTesting

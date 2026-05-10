@@ -7,6 +7,7 @@ import { runCli } from '../index'
 
 const repoRoot = path.resolve(import.meta.dirname, '../../../..')
 const fixture = (...parts: string[]) => path.join(repoRoot, 'test-data', ...parts)
+const webFixture = (...parts: string[]) => path.join(repoRoot, 'apps', 'web', ...parts)
 
 const workspaces: string[] = []
 
@@ -49,6 +50,29 @@ afterEach(async () => {
 })
 
 describe('dicorre CLI', () => {
+  it('exposes structured help and per-command discoverability for agents', async () => {
+    const help = await runCli(['help']) as {
+      docs: string
+      commands: Array<{ name: string; usage: string; examples: string[] }>
+      usage: string[]
+    }
+
+    expect(help.docs).toBe('docs/cli.md')
+    expect(help.commands.map((command) => command.name)).toContain('ingest')
+    expect(help.commands.map((command) => command.name)).toContain('send')
+    expect(help.usage.some((usage) => usage.includes('dicorre ingest'))).toBe(true)
+
+    const ingestHelp = await runCli(['ingest', '--help']) as {
+      command: { name: string; usage: string; options: Array<{ name: string }> }
+    }
+    expect(ingestHelp.command.name).toBe('ingest')
+    expect(ingestHelp.command.usage).toContain('--no-converted')
+    expect(ingestHelp.command.options.map((option) => option.name)).toContain('--concurrency')
+
+    const discover = await runCli(['discover']) as { commands: Array<{ name: string }> }
+    expect(discover.commands).toHaveLength(help.commands.length)
+  })
+
   it('ingests, anonymizes, and packages a DICOM study without browser APIs', async () => {
     const workspace = await makeWorkspace()
 
@@ -119,7 +143,7 @@ describe('dicorre CLI', () => {
     expect(state.studies[0].patientId).not.toBe('PAT001')
   })
 
-  it('ingests a ZIP archive and lists grouped studies', async () => {
+  it('filters mixed SIP ZIP archives before listing grouped studies', async () => {
     const workspace = await makeWorkspace()
 
     const ingest = await runCli([
@@ -129,12 +153,37 @@ describe('dicorre CLI', () => {
       workspace,
     ]) as { filesParsed: number; studies: number }
 
-    expect(ingest.filesParsed).toBeGreaterThan(0)
-    expect(ingest.studies).toBeGreaterThan(0)
+    expect(ingest.filesParsed).toBe(2)
+    expect(ingest.studies).toBe(1)
 
     const studies = await runCli(['studies', '--workspace', workspace]) as Array<{ files: number }>
     expect(studies.length).toBe(ingest.studies)
     expect(studies.reduce((sum, study) => sum + study.files, 0)).toBe(ingest.filesParsed)
+  })
+
+  it('filters mixed SIP RAR archives before anonymization', async () => {
+    const workspace = await makeWorkspace()
+
+    const ingest = await runCli([
+      'ingest',
+      fixture('CASES', 'mixed_sip_minimal.rar'),
+      '--workspace',
+      workspace,
+    ]) as { filesParsed: number; studies: number }
+
+    expect(ingest.filesParsed).toBe(2)
+    expect(ingest.studies).toBe(1)
+
+    const anonymized = await runCli([
+      'anonymize',
+      '--workspace',
+      workspace,
+      '--study',
+      'all',
+    ]) as { files: number; studies: number }
+
+    expect(anonymized.files).toBe(2)
+    expect(anonymized.studies).toBe(1)
   })
 
   it('persists project config and study custom fields', async () => {
@@ -179,27 +228,54 @@ describe('dicorre CLI', () => {
 
     const ingest = await runCli([
       'ingest',
-      fixture('CASES', 'Caso3_with_pdf_and_images', 'PACIENTE 4 EGC BI MX IC.jpg'),
-      fixture('CASES', 'Caso3_with_pdf_and_images', 'ecg.pdf'),
+      webFixture('src/plugins/imageConverter/test-data/red-square.jpg'),
+      webFixture('src/plugins/imageConverter/test-data/purple-square.png'),
+      webFixture('src/plugins/pdfConverter/test-data/test-document.pdf'),
+      webFixture('src/plugins/videoConverter/test-data/test-video.mp4'),
       '--workspace',
       workspace,
     ]) as { filesParsed: number; studies: number }
 
-    expect(ingest.filesParsed).toBe(2)
-    expect(ingest.studies).toBe(2)
+    expect(ingest.filesParsed).toBe(4)
+    expect(ingest.studies).toBe(4)
 
     const studies = await runCli(['studies', '--workspace', workspace]) as Array<{ studyInstanceUID: string }>
     const merged = await runCli([
       'study-merge',
-      studies[0].studyInstanceUID,
-      studies[1].studyInstanceUID,
+      ...studies.map((study) => study.studyInstanceUID),
       '--workspace',
       workspace,
     ]) as { merged: number }
-    expect(merged.merged).toBe(2)
+    expect(merged.merged).toBe(4)
 
     const afterMerge = await runCli(['studies', '--workspace', workspace]) as Array<{ files: number }>
     expect(afterMerge).toHaveLength(1)
-    expect(afterMerge[0].files).toBe(2)
+    expect(afterMerge[0].files).toBe(4)
+  })
+
+  it('validates config files and rejects invalid config', async () => {
+    const workspace = await makeWorkspace()
+    const configPath = path.join(repoRoot, 'packages', 'shared', 'app.config.json')
+
+    const valid = await runCli([
+      'config-validate',
+      configPath,
+      '--workspace',
+      workspace,
+    ]) as { valid: true }
+    expect(valid.valid).toBe(true)
+
+    const invalidConfigPath = path.join(workspace, 'invalid-config.json')
+    await writeFile(invalidConfigPath, JSON.stringify({
+      dicomServer: { timeout: 30000 },
+      anonymization: { profile: 'basic', removePrivateTags: true },
+    }))
+
+    await expect(runCli([
+      'config-validate',
+      invalidConfigPath,
+      '--workspace',
+      workspace,
+    ])).rejects.toThrow()
   })
 })

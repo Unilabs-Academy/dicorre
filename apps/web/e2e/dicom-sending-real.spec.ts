@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import path from 'path'
-import { uploadFiles } from './helpers'
+import { uploadFiles, waitForAnonymizedCountGreaterThan, waitForProcessingComplete } from './helpers'
 
 test.describe('DICOM Sending with Real Orthanc Server', () => {
 
@@ -18,13 +18,7 @@ test.describe('DICOM Sending with Real Orthanc Server', () => {
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
-    await page.waitForFunction(
-      () => {
-        const cards = document.querySelectorAll('[data-testid="file-processing-progress-card"]');
-        return cards.length === 0;
-      },
-      { timeout: 15000 }
-    )
+    await waitForProcessingComplete(page)
 
     await expect(page.getByTestId('files-count-badge')).toBeVisible({ timeout: 30000 })
     await expect(page.getByTestId('studies-data-table')).toBeVisible()
@@ -36,13 +30,11 @@ test.describe('DICOM Sending with Real Orthanc Server', () => {
     await expect(anonymizeButton).toBeEnabled()
     await anonymizeButton.click()
 
-    await expect(anonymizeButton).toBeDisabled({ timeout: 15000 })
+    await waitForAnonymizedCountGreaterThan(page, 0)
 
     await expect(page.getByTestId('studies-data-table')).toBeVisible({ timeout: 5000 })
     
-    // After anonymization, studies are deselected. Wait for UI update then re-select
-    await page.waitForTimeout(500)
-    
+    // After anonymization, studies are deselected. Re-select before sending.
     const allCheckboxes = page.getByRole('checkbox')
     const checkboxCount = await allCheckboxes.count()
     

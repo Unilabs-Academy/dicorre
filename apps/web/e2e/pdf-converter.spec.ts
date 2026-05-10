@@ -1,6 +1,12 @@
 import { test, expect } from '@playwright/test';
 import path from 'path';
-import { uploadFiles, waitForAppReady } from './helpers';
+import {
+  getBadgeCount,
+  uploadFiles,
+  waitForAnonymizedCount,
+  waitForAppReady,
+  waitForProcessingComplete,
+} from './helpers';
 
 test.describe('PDF Converter Plugin', () => {
   test.beforeEach(async ({ page }) => {
@@ -28,19 +34,12 @@ test.describe('PDF Converter Plugin', () => {
     await uploadFiles(page, testPdfPath);
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
-    await page.waitForFunction(
-      () => {
-        const cards = document.querySelectorAll('[data-testid="file-processing-progress-card"]');
-        return cards.length === 0;
-      },
-      { timeout: 15000 }
-    );
+    await waitForProcessingComplete(page);
 
     // Check if files were processed - wait for files count badge to appear
     await expect(page.getByTestId('files-count-badge')).toBeVisible({ timeout: 5000 });
     const filesCountBadge = page.getByTestId('files-count-badge');
-    const filesCountText = await filesCountBadge.textContent();
-    const fileCount = parseInt(filesCountText?.match(/(\d+)/)?.[1] || '0');
+    const fileCount = await getBadgeCount(page, 'files-count-badge');
     expect(fileCount).toBe(3);
 
     // Verify studies table appears
@@ -58,13 +57,7 @@ test.describe('PDF Converter Plugin', () => {
     await uploadFiles(page, testPdfPath);
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
-    await page.waitForFunction(
-      () => {
-        const cards = document.querySelectorAll('[data-testid="file-processing-progress-card"]');
-        return cards.length === 0;
-      },
-      { timeout: 15000 }
-    );
+    await waitForProcessingComplete(page);
 
     // Verify studies table appears and select all studies
     await expect(page.getByTestId('studies-data-table')).toBeVisible({ timeout: 10000 });
@@ -75,25 +68,19 @@ test.describe('PDF Converter Plugin', () => {
 
     // Verify anonymize button shows correct count
     const anonymizeButton = page.getByTestId('anonymize-button');
-    const studyRows = page.locator('[data-testid="studies-data-table"] tbody tr');
-    const studiesCount = await studyRows.count();
-
     await expect(anonymizeButton).toContainText('Anonymize', { timeout: 5000 });
     await expect(anonymizeButton).toBeEnabled();
 
     // Click anonymize button
     await anonymizeButton.click();
 
-    // Wait for anonymization to complete
-    await expect(anonymizeButton).toBeDisabled({ timeout: 15000 });
+    await waitForAnonymizedCount(page, 3);
 
-    // After anonymization, studies are deselected. Wait for UI update then re-select
-    await page.waitForTimeout(500);
+    // After anonymization, studies are deselected. Re-select for table checks.
     await headerCheckbox.click();
 
     // Verify files were anonymized
-    const anonymizedCountText = await page.getByTestId('anonymized-count-badge').textContent();
-    const anonymizedCount = parseInt(anonymizedCountText?.match(/(\d+)/)?.[1] || '0');
+    const anonymizedCount = await getBadgeCount(page, 'anonymized-count-badge');
 
     expect(anonymizedCount).toBe(3); // All converted PDF pages should be anonymized
   });

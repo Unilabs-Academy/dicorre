@@ -1,6 +1,12 @@
 import { test, expect } from '@playwright/test';
 import path from 'path';
-import { uploadFiles, waitForAppReady } from './helpers';
+import {
+  getBadgeCount,
+  uploadFiles,
+  waitForAnonymizedCountGreaterThan,
+  waitForAppReady,
+  waitForProcessingComplete,
+} from './helpers';
 
 test('uploads zip file and checks anonymization works', async ({ page }) => {
   await page.goto('/');
@@ -11,24 +17,16 @@ test('uploads zip file and checks anonymization works', async ({ page }) => {
   await uploadFiles(page, testZipPath);
 
   // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
-  await page.waitForFunction(
-    () => {
-      const cards = document.querySelectorAll('[data-testid="file-processing-progress-card"]');
-      return cards.length === 0;
-    },
-    { timeout: 15000 }
-  );
+  await waitForProcessingComplete(page);
 
   await expect(page.getByTestId('files-count-badge')).toBeVisible({ timeout: 15000 });
 
-  const filesCountText = await page.getByTestId('files-count-badge').textContent();
-  const fileCount = parseInt(filesCountText?.match(/(\d+)/)?.[1] || '0');
+  const fileCount = await getBadgeCount(page, 'files-count-badge');
   expect(fileCount).toBeGreaterThan(0);
 
   await expect(page.getByTestId('app-toolbar')).toBeVisible();
 
-  const anonymizedCountTextBefore = await page.getByTestId('anonymized-count-badge').textContent();
-  const anonymizedCountBefore = parseInt(anonymizedCountTextBefore?.match(/(\d+)/)?.[1] || '0');
+  const anonymizedCountBefore = await getBadgeCount(page, 'anonymized-count-badge');
   expect(anonymizedCountBefore).toBe(0);
 
   await expect(page.getByTestId('studies-data-table')).toBeVisible({ timeout: 10000 });
@@ -64,16 +62,14 @@ test('uploads zip file and checks anonymization works', async ({ page }) => {
 
   await anonymizeButton.click();
 
-  await expect(anonymizeButton).toBeDisabled({ timeout: 15000 });
+  await waitForAnonymizedCountGreaterThan(page, 0);
 
-  // After anonymization, studies are deselected. Wait for UI update then re-select
-  await page.waitForTimeout(500);
+  // After anonymization, studies are deselected. Re-select for row checks.
   for (let i = 1; i < checkboxCount; i++) {
     await studyCheckboxes.nth(i).click();
   }
 
-  const anonymizedCountText = await page.getByTestId('anonymized-count-badge').textContent();
-  const anonymizedCount = parseInt(anonymizedCountText?.match(/(\d+)/)?.[1] || '0');
+  const anonymizedCount = await getBadgeCount(page, 'anonymized-count-badge');
   expect(anonymizedCount).toBeGreaterThan(0);
 
   // Verify studies table is visible

@@ -41,6 +41,7 @@ export function useAppState(runtime: RuntimeType) {
   // Configuration state
   const config = ref<AppConfig | null>(null)
   const configError = ref<Error | null>(null)
+  const pluginsReady = ref(false)
   const serverUrl = computed<string>(() => config.value?.dicomServer?.url ?? '')
   const configLoading = computed(() => config.value === null)
 
@@ -228,6 +229,7 @@ export function useAppState(runtime: RuntimeType) {
   const loadServerUrl = async () => { /* replaced by stream; keep for API compatibility */ }
 
   const loadPlugins = async () => {
+    pluginsReady.value = false
     try {
       await runtime.runPromise(
         Effect.gen(function* () {
@@ -252,6 +254,8 @@ export function useAppState(runtime: RuntimeType) {
       )
     } catch (err) {
       console.error('Failed to load plugins:', err)
+    } finally {
+      pluginsReady.value = true
     }
   }
 
@@ -1214,6 +1218,7 @@ export function useAppState(runtime: RuntimeType) {
     concurrency,
     appError,
     config,
+    pluginsReady,
     configLoading,
     configError,
     serverUrl,

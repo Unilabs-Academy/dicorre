@@ -1,6 +1,12 @@
 import { test, expect } from '@playwright/test';
 import path from 'path';
-import { uploadFiles, waitForAppReady } from './helpers';
+import {
+  getBadgeCount,
+  uploadFiles,
+  waitForAnonymizedCount,
+  waitForAppReady,
+  waitForProcessingComplete,
+} from './helpers';
 
 test('uploads single case zip file and checks correct grouping', async ({ page }) => {
   await page.goto('/');
@@ -10,23 +16,15 @@ test('uploads single case zip file and checks correct grouping', async ({ page }
   await uploadFiles(page, testZipPath);
 
   // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
-  await page.waitForFunction(
-    () => {
-      const cards = document.querySelectorAll('[data-testid="file-processing-progress-card"]');
-      return cards.length === 0;
-    },
-    { timeout: 15000 }
-  );
+  await waitForProcessingComplete(page);
 
   const filesCountBadge = page.getByTestId('files-count-badge');
   await expect(filesCountBadge).toBeVisible();
   
-  const filesCountText = await filesCountBadge.textContent();
-  const fileCount = parseInt(filesCountText?.match(/(\d+)/)?.[1] || '0');
+  const fileCount = await getBadgeCount(page, 'files-count-badge');
   expect(fileCount).toBeGreaterThan(0);
 
-  const anonymizedCountBeforeText = await page.getByTestId('anonymized-count-badge').textContent();
-  const anonymizedCountBefore = parseInt(anonymizedCountBeforeText?.match(/(\d+)/)?.[1] || '0');
+  const anonymizedCountBefore = await getBadgeCount(page, 'anonymized-count-badge');
   expect(anonymizedCountBefore).toBe(0);
 
   await expect(page.getByTestId('studies-data-table')).toBeVisible({ timeout: 10000 });
@@ -39,19 +37,15 @@ test('uploads single case zip file and checks correct grouping', async ({ page }
   await expect(anonymizeButton).toBeEnabled();
 
   await anonymizeButton.click();
-  
-  await expect(anonymizeButton).toBeDisabled({ timeout: 15000 });
 
-  // After anonymization, studies are deselected. Wait for UI update then re-select
-  await page.waitForTimeout(500);
+  const currentFileCount = await getBadgeCount(page, 'files-count-badge');
+  await waitForAnonymizedCount(page, currentFileCount);
+
+  // After anonymization, studies are deselected. Re-select for table checks.
   await studyCheckboxes.nth(1).click();
 
-  const anonymizedCountText = await page.getByTestId('anonymized-count-badge').textContent();
-  const anonymizedCount = parseInt(anonymizedCountText?.match(/(\d+)/)?.[1] || '0');
-  
-  const currentFilesCountText = await page.getByTestId('files-count-badge').textContent();
-  const currentFileCount = parseInt(currentFilesCountText?.match(/(\d+)/)?.[1] || '0');
-  
+  const anonymizedCount = await getBadgeCount(page, 'anonymized-count-badge');
+
   expect(anonymizedCount).toBe(currentFileCount);
 
   // Check that there's exactly 1 study in the table

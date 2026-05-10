@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import path from 'path'
-import { uploadFiles } from './helpers'
+import { uploadFiles, waitForAnonymizedCountGreaterThan, waitForProcessingComplete } from './helpers'
 
 test.describe('DICOM Sending E2E Tests', () => {
 
@@ -11,13 +11,7 @@ test.describe('DICOM Sending E2E Tests', () => {
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
-    await page.waitForFunction(
-      () => {
-        const cards = document.querySelectorAll('[data-testid="file-processing-progress-card"]');
-        return cards.length === 0;
-      },
-      { timeout: 15000 }
-    )
+    await waitForProcessingComplete(page)
 
     await expect(page.getByTestId('files-count-badge')).toBeVisible()
     await expect(page.getByTestId('studies-data-table')).toBeVisible()
@@ -29,10 +23,9 @@ test.describe('DICOM Sending E2E Tests', () => {
     await expect(anonymizeButton).toBeEnabled()
     await anonymizeButton.click()
 
-    await expect(anonymizeButton).toBeDisabled({ timeout: 15000 })
+    await waitForAnonymizedCountGreaterThan(page, 0)
     
-    // After anonymization, studies are deselected. Wait for UI update then re-select
-    await page.waitForTimeout(500)
+    // After anonymization, studies are deselected. Re-select before sending.
     await studyCheckboxes.nth(1).click()
 
     let requestCount = 0
@@ -60,13 +53,7 @@ test.describe('DICOM Sending E2E Tests', () => {
     await uploadFiles(page, testZipPath)
     
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
-    await page.waitForFunction(
-      () => {
-        const cards = document.querySelectorAll('[data-testid="file-processing-progress-card"]');
-        return cards.length === 0;
-      },
-      { timeout: 15000 }
-    )
+    await waitForProcessingComplete(page)
     
     await expect(page.getByTestId('studies-data-table')).toBeVisible({ timeout: 10000 })
 
@@ -75,10 +62,9 @@ test.describe('DICOM Sending E2E Tests', () => {
 
     const anonymizeButton = page.getByTestId('anonymize-button')
     await anonymizeButton.click()
-    await expect(anonymizeButton).toBeDisabled({ timeout: 15000 })
+    await waitForAnonymizedCountGreaterThan(page, 0)
 
-    // After anonymization, studies are deselected. Wait for UI update then re-select
-    await page.waitForTimeout(500)
+    // After anonymization, studies are deselected. Re-select before sending.
     await studyCheckboxes.nth(1).click()
 
     await page.route('**/studies**', async route => {

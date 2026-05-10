@@ -89,6 +89,10 @@ export const DicomProcessorLive = Layer.succeed(
               transferSyntaxUID: dict[tag('Transfer Syntax UID')]?.Value?.[0] || '1.2.840.10008.1.2'
             }
 
+            if (!metadata.studyInstanceUID || !metadata.seriesInstanceUID || !metadata.sopInstanceUID) {
+              throw new Error(`File ${file.fileName} is missing required DICOM identity tags`)
+            }
+
             console.log(`Successfully parsed ${file.fileName}: Patient ${metadata.patientId}, Study ${metadata.accessionNumber}`)
 
             return {

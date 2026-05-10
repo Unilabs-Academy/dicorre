@@ -108,7 +108,7 @@ const removeTask = (taskId: string) => {
 }
 
 const isAppReady = computed(() => {
-  return !appState.configLoading.value && !appState.configError.value && appState.config.value !== null
+  return !appState.configLoading.value && !appState.configError.value && appState.config.value !== null && appState.pluginsReady.value
 })
 
 const studiesData = computed(() => {

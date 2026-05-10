@@ -24,3 +24,39 @@ export async function waitForAppReady(page: Page, timeout: number = 5000) {
   // Wait for the toolbar to be visible which indicates app is ready
   await page.getByTestId('app-toolbar').waitFor({ state: 'visible', timeout })
 }
+
+export async function waitForProcessingComplete(page: Page, timeout: number = 30000) {
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-testid="file-processing-progress-card"]').length === 0,
+    { timeout }
+  )
+}
+
+export async function getBadgeCount(page: Page, testId: string): Promise<number> {
+  const text = await page.getByTestId(testId).textContent()
+  return parseInt(text?.match(/(\d+)/)?.[1] || '0', 10)
+}
+
+export async function waitForAnonymizedCount(page: Page, expected: number, timeout: number = 30000) {
+  await page.waitForFunction(
+    (target) => {
+      const text = document.querySelector('[data-testid="anonymized-count-badge"]')?.textContent || ''
+      const count = parseInt(text.match(/(\d+)/)?.[1] || '0', 10)
+      return count === target
+    },
+    expected,
+    { timeout }
+  )
+}
+
+export async function waitForAnonymizedCountGreaterThan(page: Page, minimum: number, timeout: number = 30000) {
+  await page.waitForFunction(
+    (target) => {
+      const text = document.querySelector('[data-testid="anonymized-count-badge"]')?.textContent || ''
+      const count = parseInt(text.match(/(\d+)/)?.[1] || '0', 10)
+      return count > target
+    },
+    minimum,
+    { timeout }
+  )
+}
