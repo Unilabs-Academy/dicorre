@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -13,6 +14,34 @@ const makeWorkspace = async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'dicorre-cli-test-'))
   workspaces.push(workspace)
   return workspace
+}
+
+const makeDicomWebServer = async () => {
+  let posts = 0
+  const server = createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/dicom-web/studies') {
+      posts++
+      req.resume()
+      res.writeHead(200, { 'content-type': 'application/dicom+json' })
+      res.end('{}')
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Failed to bind test server')
+  return {
+    url: `http://127.0.0.1:${address.port}/dicom-web`,
+    get posts() {
+      return posts
+    },
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve())
+    }),
+  }
 }
 
 afterEach(async () => {
@@ -43,6 +72,33 @@ describe('dicorre CLI', () => {
 
     expect(anonymized.files).toBe(1)
     expect(anonymized.studies).toBe(1)
+
+    const server = await makeDicomWebServer()
+    const configPath = path.join(workspace, 'config-for-send.json')
+    const config = JSON.parse(await readFile(path.join(repoRoot, 'packages', 'shared', 'app.config.json'), 'utf8'))
+    config.dicomServer = {
+      ...config.dicomServer,
+      url: server.url,
+      timeout: 5000,
+    }
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
+
+    try {
+      const send = await runCli([
+        'send',
+        '--workspace',
+        workspace,
+        '--study',
+        'all',
+        '--config',
+        configPath,
+      ]) as { succeeded: number; failed: number; skipped: number }
+
+      expect(send).toMatchObject({ succeeded: 1, failed: 0, skipped: 0 })
+      expect(server.posts).toBe(1)
+    } finally {
+      await server.close()
+    }
 
     const out = path.join(workspace, 'download.zip')
     const downloaded = await runCli([
