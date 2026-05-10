@@ -1,9 +1,17 @@
 import tailwindcss from '@tailwindcss/vite'
+import crypto from 'node:crypto'
 import { fileURLToPath, URL } from 'node:url'
 
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
+
+if (!('hash' in crypto)) {
+  Object.defineProperty(crypto, 'hash', {
+    value: (algorithm: string, data: crypto.BinaryLike) =>
+      crypto.createHash(algorithm).update(data).digest('hex'),
+  })
+}
 
 // https://vite.dev/config/
 export default defineConfig({

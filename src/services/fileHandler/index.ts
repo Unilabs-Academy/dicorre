@@ -1,5 +1,5 @@
 import { Effect, Context, Layer } from 'effect'
-import { BlobReader, ZipReader } from '@zip.js/zip.js'
+import { BlobReader, ZipReader } from '@zip.js/zip.js/index-native.js'
 import { createExtractorFromData, type FileHeader, type UnrarError } from 'node-unrar-js/esm/index.esm.js'
 import unrarWasmUrl from 'node-unrar-js/esm/js/unrar.wasm?url'
 import * as dcmjs from 'dcmjs'

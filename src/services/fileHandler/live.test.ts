@@ -3,6 +3,7 @@
 import { describe, it, expect } from 'vitest'
 import { Effect, Layer } from 'effect'
 import JSZip from 'jszip'
+import { File as NodeFile } from 'node:buffer'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { FileHandler, FileHandlerLive } from './index'
@@ -21,22 +22,7 @@ function createBlobBackedFile(bytes: BlobPart, fileName: string, type: string): 
     ? bytes
     : Buffer.from(bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes as Uint8Array))
 
-  const makePart = (part: Buffer): File =>
-    ({
-      name: fileName,
-      type,
-      size: part.byteLength,
-      lastModified: Date.now(),
-      webkitRelativePath: '',
-      arrayBuffer: async () =>
-        part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) as ArrayBuffer,
-      bytes: async () => new Uint8Array(part),
-      text: async () => part.toString('utf-8'),
-      slice: (start?: number, end?: number) => makePart(part.subarray(start ?? 0, end ?? part.byteLength)),
-      stream: () => new Blob([part]).stream(),
-    }) as unknown as File
-
-  return makePart(buffer)
+  return new NodeFile([buffer], fileName, { type, lastModified: Date.now() }) as unknown as File
 }
 
 function loadFixtureZipFile(fileName = 'mixed_sip_minimal.zip'): File {
