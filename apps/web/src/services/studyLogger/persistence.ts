@@ -1,14 +1,8 @@
-import { Effect, Context, Layer } from "effect"
-import type { StudyLogEntry } from "./index"
+import { Effect, Layer } from "effect"
+import { StudyLoggerPersistence } from '@dicorre/shared/services/studyLogger/persistence'
+import type { StudyLogEntry } from '@dicorre/shared/services/studyLogger'
 
-export class StudyLoggerPersistence extends Context.Tag("StudyLoggerPersistence")<
-  StudyLoggerPersistence,
-  {
-    readonly load: Effect.Effect<Map<string, StudyLogEntry[]> | null, never>
-    readonly save: (logs: Map<string, StudyLogEntry[]>) => Effect.Effect<void, never>
-    readonly clear: Effect.Effect<void, never>
-  }
->() { }
+export { StudyLoggerPersistence }
 
 const STORAGE_KEY = "study-logs"
 

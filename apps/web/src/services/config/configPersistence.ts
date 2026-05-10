@@ -1,16 +1,10 @@
-import { Effect, Context, Layer } from "effect"
-import type { AppConfig } from "@/services/config/schema"
+import { Effect, Layer } from 'effect'
+import { ConfigPersistence } from '@dicorre/shared/services/config/configPersistence'
+import type { AppConfig } from '@dicorre/shared/services/config/schema'
 
-export class ConfigPersistence extends Context.Tag("ConfigPersistence")<
-  ConfigPersistence,
-  {
-    readonly load: Effect.Effect<AppConfig | null, never>
-    readonly save: (cfg: AppConfig) => Effect.Effect<void, never>
-    readonly clear: Effect.Effect<void, never>
-  }
->() { }
+const STORAGE_KEY = 'app-config'
 
-const STORAGE_KEY = "app-config"
+export { ConfigPersistence }
 
 export const ConfigPersistenceLocalStorage = Layer.succeed(
   ConfigPersistence,
@@ -37,8 +31,6 @@ export const ConfigPersistenceLocalStorage = Layer.succeed(
       } catch {
         // ignore persistence failures
       }
-    })
-  } as const
+    }),
+  } as const,
 )
-
-

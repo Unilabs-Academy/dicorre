@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Effect } from 'effect'
 import * as dcmjs from 'dcmjs'
-import type { DicomFile } from '@/types/dicom'
+import type { DicomFile } from '@dicorre/shared/types/dicom'
 import { inspectMultiframeSplit, splitMultiframeDicom } from './index'
 
 const MULTIFRAME_TRUE_COLOR_SC_UID = '1.2.840.10008.5.1.4.1.1.7.4'

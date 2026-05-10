@@ -9,7 +9,7 @@
  * anonymization process needs reference dates for proper anonymization.
  */
 
-import { tag } from '@/utils/dicom-tag-dictionary'
+import { tag } from '@dicorre/shared/utils/dicom-tag-dictionary'
 
 /**
  * Get a reference date from DICOM dictionary for anonymization purposes.

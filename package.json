@@ -9,7 +9,7 @@
     "dev": "pnpm --filter @dicorre/web dev",
     "build": "turbo run build",
     "preview": "pnpm --filter @dicorre/web preview",
-    "test:unit": "pnpm --filter @dicorre/web test:unit -- --run",
+    "test:unit": "turbo run test:unit",
     "test:e2e": "pnpm --filter @dicorre/web test:e2e",
     "install:webmcp-chrome": "pnpm --filter @dicorre/web install:webmcp-chrome",
     "type-check": "turbo run type-check",

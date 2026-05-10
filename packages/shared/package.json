@@ -1,0 +1,35 @@
+{
+  "name": "@dicorre/shared",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./services/*": "./src/services/*/index.ts",
+    "./services/config/*": "./src/services/config/*.ts",
+    "./services/studyLogger/*": "./src/services/studyLogger/*.ts",
+    "./types/*": "./src/types/*.ts",
+    "./utils/*": "./src/utils/*.ts",
+    "./app-config": "./app.config.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test:unit": "vitest --run",
+    "lint": "eslint . --fix",
+    "format": "prettier --write src/"
+  },
+  "dependencies": {
+    "@effect/schema": "^0.75.5",
+    "@umessen/dicom-deidentifier": "1.0.0-beta.4",
+    "dcmjs": "^0.43.1",
+    "effect": "^3.17.2"
+  },
+  "devDependencies": {
+    "@tsconfig/node22": "^22.0.2",
+    "@types/node": "^22.15.32",
+    "typescript": "~5.8.0",
+    "vitest": "^3.2.4"
+  }
+}

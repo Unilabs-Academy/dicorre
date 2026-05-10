@@ -14,6 +14,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@dicorre/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@effect/platform':
         specifier: ^0.90.0
         version: 0.90.0(effect@3.17.2)
@@ -171,6 +174,34 @@ importers:
       vue-tsc:
         specifier: ^2.2.10
         version: 2.2.12(typescript@5.8.3)
+
+  packages/shared:
+    dependencies:
+      '@effect/schema':
+        specifier: ^0.75.5
+        version: 0.75.5(effect@3.17.2)
+      '@umessen/dicom-deidentifier':
+        specifier: 1.0.0-beta.4
+        version: 1.0.0-beta.4
+      dcmjs:
+        specifier: ^0.43.1
+        version: 0.43.1
+      effect:
+        specifier: ^3.17.2
+        version: 3.17.2
+    devDependencies:
+      '@tsconfig/node22':
+        specifier: ^22.0.2
+        version: 22.0.2
+      '@types/node':
+        specifier: ^22.15.32
+        version: 22.16.5
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@22.16.5)(jiti@2.5.1)(jsdom@26.1.0)(lightningcss@1.32.0)(stylus@0.57.0)
 
 packages:
 

@@ -3,7 +3,7 @@ import { Effect } from 'effect'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { DicomProcessor, DicomProcessorLive } from './index'
-import type { DicomFile } from '@/types/dicom'
+import type { DicomFile } from '@dicorre/shared/types/dicom'
 
 // Helper to load DICOM files from test-data
 function loadTestDicomFile(relativePath: string): DicomFile {

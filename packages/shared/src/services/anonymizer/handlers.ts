@@ -3,7 +3,7 @@
  * Replicates functionality from Python deid package
  */
 
-import { tag } from '@/utils/dicom-tag-dictionary'
+import { tag } from '@dicorre/shared/utils/dicom-tag-dictionary'
 
 // Note: Using any type for DicomElement as the library types may be incomplete
 type DicomElement = any
@@ -20,7 +20,9 @@ function generateUID(): string {
   const ORG_ROOT = '1.2.826.0.1.3680043.8.498'
 
   // Generate a UUID-based identifier
-  const uuid = crypto.randomUUID().replace(/-/g, '')
+  const uuid =
+    globalThis.crypto?.randomUUID?.().replace(/-/g, '') ??
+    Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
   const bigintUid = parseInt(uuid.substring(0, 16), 16).toString()
 
   const fullUid = `${ORG_ROOT}.${bigintUid}`

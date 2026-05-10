@@ -14,7 +14,7 @@ declare module 'dcmjs' {
       dict: any
       write(options?: any): ArrayBuffer
     }
-    
+
     export class DicomMetaDictionary {
       static naturalizeDataset(dict: any): any
       static uid(): string

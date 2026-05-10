@@ -7,10 +7,10 @@ import { Anonymizer, AnonymizerLive } from './index'
 import { DicomProcessor, DicomProcessorLive } from '../dicomProcessor'
 import { Layer } from 'effect'
 import { clearValueCache } from './handlers'
-import type { DicomFile } from '@/types/dicom'
+import type { DicomFile } from '@dicorre/shared/types/dicom'
 import { TestConfigLayer } from '../shared/test-layers'
 import { ConfigService } from '../config'
-import type { AnonymizationConfig } from '@/services/config/schema'
+import type { AnonymizationConfig } from '@dicorre/shared/services/config/schema'
 
 // Helper to load DICOM files from test-data
 function loadTestDicomFile(relativePath: string): DicomFile {

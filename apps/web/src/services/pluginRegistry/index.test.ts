@@ -3,7 +3,7 @@ import { Effect } from 'effect'
 import { PluginRegistry, PluginRegistryLive } from './index'
 import { imageConverterPlugin } from '@/plugins/imageConverter'
 import { sendLoggerPlugin } from '@/plugins/sendLogger'
-import type { PluginConfig } from '@/types/plugins'
+import type { PluginConfig } from '@dicorre/shared/types/plugins'
 
 // Helper function to initialize plugins for testing
 // Note: Not all plugins can run in Node.js context (e.g., PDF converter requires browser DOM APIs)
