@@ -7,9 +7,9 @@ import {
   getEffectiveSendTimeoutMs,
   type SendStudyResult
 } from './index'
-import { OPFSStorage } from '@/services/opfsStorage'
-import { StorageError } from '@/types/effects'
-import type { DicomFile } from '@/types/dicom'
+import { FileStorage } from '@dicorre/shared/services/fileStorage'
+import { StorageError } from '@dicorre/shared/types/effects'
+import type { DicomFile } from '@dicorre/shared/types/dicom'
 
 const originalFetch = globalThis.fetch
 const MULTIFRAME_TRUE_COLOR_SC_UID = '1.2.840.10008.5.1.4.1.1.7.4'
@@ -74,13 +74,13 @@ const createSupportedMultiframeBuffer = (): ArrayBuffer => {
 
 const makeOpfsLayer = (buffers: Record<string, ArrayBuffer>) =>
   Layer.succeed(
-    OPFSStorage,
-    OPFSStorage.of({
+    FileStorage,
+    FileStorage.of({
       saveFile: () => Effect.succeed(undefined),
       loadFile: (fileId: string) =>
         fileId in buffers
           ? Effect.succeed(buffers[fileId]!)
-          : Effect.fail(new StorageError({ message: `Missing OPFS file ${fileId}`, fileName: fileId })),
+          : Effect.fail(new StorageError({ message: `Missing storage file ${fileId}`, fileName: fileId })),
       fileExists: () => Effect.succeed(true),
       deleteFile: () => Effect.succeed(undefined),
       listFiles: Effect.succeed([]),
@@ -93,7 +93,7 @@ const runSendFile = <A>(effect: Effect.Effect<A, unknown, DicomSender>) =>
   Effect.runPromise(effect.pipe(Effect.provide(DicomSenderLive)))
 
 const runSendFiles = (
-  effect: Effect.Effect<SendStudyResult, unknown, DicomSender | OPFSStorage>,
+  effect: Effect.Effect<SendStudyResult, unknown, DicomSender | FileStorage>,
   files: DicomFile[]
 ) =>
   Effect.runPromise(

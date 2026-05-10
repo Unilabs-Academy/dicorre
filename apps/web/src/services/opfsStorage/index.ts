@@ -1,5 +1,6 @@
 import { Effect, Context, Layer, Schedule } from "effect"
 import { StorageError, ValidationError, type StorageErrorType } from '@/types/effects'
+import { FileStorage } from '@dicorre/shared/services/fileStorage'
 
 export class OPFSStorage extends Context.Tag("OPFSStorage")<
   OPFSStorage,
@@ -18,9 +19,7 @@ export class OPFSStorage extends Context.Tag("OPFSStorage")<
   }
 }
 
-export const OPFSStorageLive = Layer.succeed(
-  OPFSStorage,
-  (() => {
+const OPFSStorageService = (() => {
     const rootDirName = 'dicom-files'
     let rootDirHandle: FileSystemDirectoryHandle | null = null
 
@@ -321,15 +320,18 @@ export const OPFSStorageLive = Layer.succeed(
       }
     })
 
-    return {
-      saveFile,
-      loadFile,
-      fileExists,
-      deleteFile,
-      listFiles,
-      clearAllFiles,
-      getStorageInfo
-    } as const
-  })()
-)
+  return {
+    saveFile,
+    loadFile,
+    fileExists,
+    deleteFile,
+    listFiles,
+    clearAllFiles,
+    getStorageInfo
+  } as const
+})()
 
+export const OPFSStorageLive = Layer.mergeAll(
+  Layer.succeed(OPFSStorage, OPFSStorage.of(OPFSStorageService)),
+  Layer.succeed(FileStorage, FileStorage.of(OPFSStorageService))
+)

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Effect, Layer } from 'effect'
 import { DownloadService, DownloadServiceLive } from './index'
-import { OPFSStorage } from '../opfsStorage'
-import { StorageError } from '@/types/effects'
-import type { DicomStudy, DicomFile } from '@/types/dicom'
+import { FileStorage } from '@dicorre/shared/services/fileStorage'
+import { StorageError } from '@dicorre/shared/types/effects'
+import type { DicomStudy, DicomFile } from '@dicorre/shared/types/dicom'
 
 // Mock JSZip
 const mockFile = vi.fn()
@@ -19,8 +19,8 @@ vi.mock('jszip', () => ({
   })),
 }))
 
-// Mock OPFS Storage
-const mockOPFSStorage = () => {
+// Mock file storage
+const mockFileStorage = () => {
   const mockFiles = new Map<string, ArrayBuffer>()
 
   // Add some test files
@@ -80,12 +80,12 @@ const createTestStudy = (
 })
 
 describe('DownloadService', () => {
-  const mockStorage = mockOPFSStorage()
+  const mockStorage = mockFileStorage()
 
   const testLayer = Layer.mergeAll(
-    Layer.succeed(OPFSStorage, OPFSStorage.of(mockStorage)),
+    Layer.succeed(FileStorage, FileStorage.of(mockStorage)),
     DownloadServiceLive.pipe(
-      Layer.provide(Layer.succeed(OPFSStorage, OPFSStorage.of(mockStorage))),
+      Layer.provide(Layer.succeed(FileStorage, FileStorage.of(mockStorage))),
     ),
   )
 
@@ -207,8 +207,8 @@ describe('DownloadService', () => {
       expect(result[0].size).toBe(0)
     })
 
-    it('should handle missing files in OPFS gracefully', async () => {
-      // Create study with file that doesn't exist in OPFS
+    it('should handle missing files in storage gracefully', async () => {
+      // Create study with file that doesn't exist in storage
       const study = createTestStudy('1.2.3.4.5', 'PAT001')
       study.series[0].files[0].opfsFileId = 'nonexistent-file'
 
@@ -226,7 +226,7 @@ describe('DownloadService', () => {
       expect(result[0]).toBeInstanceOf(Blob)
 
       // Should still create zip but without the missing file
-      // File should not be added to zip since it doesn't exist in OPFS
+      // File should not be added to zip since it doesn't exist in storage
       expect(mockFile).not.toHaveBeenCalledWith(
         expect.stringContaining('nonexistent-file'),
         expect.any(ArrayBuffer),

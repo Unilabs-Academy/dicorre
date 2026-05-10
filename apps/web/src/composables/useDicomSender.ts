@@ -11,7 +11,7 @@ import {
 	  type SendStudyResult,
 	  type SendWarningResult
 	} from '@/services/dicomSender'
-import type { OPFSStorage } from '@/services/opfsStorage'
+import type { FileStorage } from '@dicorre/shared/services/fileStorage'
 
 export interface SendingProgress {
   total: number
@@ -65,7 +65,7 @@ export function useDicomSender(runtime?: RuntimeType) {
 	      onFileWarning?: (warning: SendWarningResult) => void
 	      onSplitFallback?: (fallback: SendSplitFallbackResult) => void
 	    }
-  ): Effect.Effect<SendStudyResult, Error, ConfigService | DicomSender | OPFSStorage> =>
+  ): Effect.Effect<SendStudyResult, Error, ConfigService | DicomSender | FileStorage> =>
     Effect.gen(function* () {
       if (!runtime) {
         return yield* Effect.fail(new Error('Runtime not provided to useDicomSender'))

@@ -189,6 +189,9 @@ importers:
       effect:
         specifier: ^3.17.2
         version: 3.17.2
+      jszip:
+        specifier: ^3.10.1
+        version: 3.10.1
     devDependencies:
       '@tsconfig/node22':
         specifier: ^22.0.2
