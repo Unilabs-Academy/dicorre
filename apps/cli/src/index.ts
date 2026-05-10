@@ -2,10 +2,16 @@
 import { webcrypto } from 'node:crypto'
 import {
   anonymize,
+  clearCustomField,
+  clearProject,
+  createProject,
   download,
   ingest,
   listStudies,
+  loadConfig,
   send,
+  setCustomField,
+  showConfig,
   validateConfig,
 } from './commands'
 
@@ -65,6 +71,12 @@ const help = () => ({
     'dicorre download [--study all|uid] [--out download.zip] [--workspace .dicorre] [--state state.json]',
     'dicorre send [--study all|uid] [--workspace .dicorre] [--state state.json] [--config config.json]',
     'dicorre config-validate <config.json>',
+    'dicorre config-load <config.json> [--workspace .dicorre]',
+    'dicorre config-show [--workspace .dicorre]',
+    'dicorre project-create <name> [--workspace .dicorre]',
+    'dicorre project-clear [--workspace .dicorre]',
+    'dicorre field-set <study-uid> <field> <value> [--workspace .dicorre] [--state state.json]',
+    'dicorre field-clear <study-uid> <field> [--workspace .dicorre] [--state state.json]',
   ],
 })
 
@@ -96,6 +108,26 @@ export const runCli = async (argv: string[]): Promise<unknown> => {
     case 'config-validate':
       if (!parsed.positionals[0]) throw new Error('config-validate requires a config path')
       return validateConfig(parsed.positionals[0], { workspace })
+    case 'config-load':
+      if (!parsed.positionals[0]) throw new Error('config-load requires a config path')
+      return loadConfig(parsed.positionals[0], { workspace })
+    case 'config-show':
+      return showConfig({ workspace })
+    case 'project-create':
+      if (!parsed.positionals[0]) throw new Error('project-create requires a project name')
+      return createProject(parsed.positionals[0], { workspace })
+    case 'project-clear':
+      return clearProject({ workspace })
+    case 'field-set':
+      if (!parsed.positionals[0] || !parsed.positionals[1] || !parsed.positionals[2]) {
+        throw new Error('field-set requires a study id, field, and value')
+      }
+      return setCustomField(parsed.positionals[0], parsed.positionals[1], parsed.positionals[2], { workspace, state })
+    case 'field-clear':
+      if (!parsed.positionals[0] || !parsed.positionals[1]) {
+        throw new Error('field-clear requires a study id and field')
+      }
+      return clearCustomField(parsed.positionals[0], parsed.positionals[1], { workspace, state })
     case 'help':
     default:
       return help()

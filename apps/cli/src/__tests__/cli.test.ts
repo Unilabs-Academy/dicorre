@@ -137,6 +137,43 @@ describe('dicorre CLI', () => {
     expect(studies.reduce((sum, study) => sum + study.files, 0)).toBe(ingest.filesParsed)
   })
 
+  it('persists project config and study custom fields', async () => {
+    const workspace = await makeWorkspace()
+
+    await runCli([
+      'ingest',
+      fixture('IM-0001-0001.dcm'),
+      '--workspace',
+      workspace,
+    ])
+    const studies = await runCli(['studies', '--workspace', workspace]) as Array<{ studyInstanceUID: string }>
+    const studyId = studies[0].studyInstanceUID
+
+    const project = await runCli([
+      'project-create',
+      'Agent Batch',
+      '--workspace',
+      workspace,
+    ]) as { project: { name: string } }
+    expect(project.project.name).toBe('Agent Batch')
+
+    const config = await runCli(['config-show', '--workspace', workspace]) as { config: { project?: { name: string } } }
+    expect(config.config.project?.name).toBe('Agent Batch')
+
+    const field = await runCli([
+      'field-set',
+      studyId,
+      'Study Description',
+      'CLI Override',
+      '--workspace',
+      workspace,
+    ]) as { field: string; value: string }
+    expect(field).toMatchObject({ field: 'Study Description', value: 'CLI Override' })
+
+    const state = JSON.parse(await readFile(path.join(workspace, 'state.json'), 'utf8'))
+    expect(state.studies[0].customFields['Study Description']).toBe('CLI Override')
+  })
+
   it('accepts web-supported media inputs through Node conversion path', async () => {
     const workspace = await makeWorkspace()
 

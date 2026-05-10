@@ -3,6 +3,7 @@ import path from 'node:path'
 import { Effect } from 'effect'
 import { Anonymizer } from '@dicorre/shared/services/anonymizer'
 import { ConfigService } from '@dicorre/shared/services/config'
+import type { AppConfig } from '@dicorre/shared/services/config/schema'
 import { DicomProcessor } from '@dicorre/shared/services/dicomProcessor'
 import { DicomSender } from '@dicorre/shared/services/dicomSender'
 import { DownloadService } from '@dicorre/shared/services/downloadService'
@@ -48,6 +49,18 @@ export interface SendSummary {
   readonly succeeded: number
   readonly failed: number
   readonly skipped: number
+}
+
+export interface ConfigSummary {
+  readonly config: AppConfig
+}
+
+export interface ProjectSummary {
+  readonly project?: {
+    readonly id: string
+    readonly name: string
+    readonly createdAt: string
+  }
 }
 
 const resolveCliPaths = (workspaceArg?: string, stateArg?: string): CliPaths => {
@@ -267,6 +280,103 @@ export const validateConfig = async (
     return { valid: true as const }
   })
   return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
+}
+
+export const showConfig = async (
+  options: { readonly workspace?: string } = {},
+): Promise<ConfigSummary> => {
+  const paths = resolveCliPaths(options.workspace)
+  const effect = Effect.gen(function* () {
+    const configService = yield* ConfigService
+    const config = yield* configService.getCurrentConfig
+    return { config }
+  })
+  return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
+}
+
+export const loadConfig = async (
+  configPath: string,
+  options: { readonly workspace?: string } = {},
+): Promise<ConfigSummary> => {
+  const paths = resolveCliPaths(options.workspace)
+  const effect = Effect.gen(function* () {
+    yield* loadConfigIfProvided(configPath)
+    const configService = yield* ConfigService
+    const config = yield* configService.getCurrentConfig
+    return { config }
+  })
+  return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
+}
+
+export const createProject = async (
+  name: string,
+  options: { readonly workspace?: string } = {},
+): Promise<ProjectSummary> => {
+  const paths = resolveCliPaths(options.workspace)
+  const effect = Effect.gen(function* () {
+    const configService = yield* ConfigService
+    const project = yield* configService.createProject(name)
+    yield* configService.updateProject(project)
+    return { project }
+  })
+  return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
+}
+
+export const clearProject = async (
+  options: { readonly workspace?: string } = {},
+): Promise<ProjectSummary> => {
+  const paths = resolveCliPaths(options.workspace)
+  const effect = Effect.gen(function* () {
+    const configService = yield* ConfigService
+    yield* configService.clearProject
+    return { project: undefined }
+  })
+  return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
+}
+
+export const setCustomField = async (
+  studyId: string,
+  field: string,
+  value: string,
+  options: { readonly workspace?: string; readonly state?: string } = {},
+): Promise<{ studyId: string; field: string; value: string; statePath: string }> => {
+  const paths = resolveCliPaths(options.workspace, options.state)
+  const state = await loadState(paths.state)
+  let matched = false
+  const studies = state.studies.map((study) => {
+    if (study.id !== studyId && study.studyInstanceUID !== studyId) return study
+    matched = true
+    return {
+      ...study,
+      customFields: {
+        ...(study.customFields ?? {}),
+        [field]: value,
+      },
+    }
+  })
+  if (!matched) throw new Error(`Study not found: ${studyId}`)
+  await saveState(paths.state, { ...state, studies })
+  return { studyId, field, value, statePath: paths.state }
+}
+
+export const clearCustomField = async (
+  studyId: string,
+  field: string,
+  options: { readonly workspace?: string; readonly state?: string } = {},
+): Promise<{ studyId: string; field: string; statePath: string }> => {
+  const paths = resolveCliPaths(options.workspace, options.state)
+  const state = await loadState(paths.state)
+  let matched = false
+  const studies = state.studies.map((study) => {
+    if (study.id !== studyId && study.studyInstanceUID !== studyId) return study
+    matched = true
+    const customFields = { ...(study.customFields ?? {}) }
+    delete customFields[field]
+    return { ...study, customFields }
+  })
+  if (!matched) throw new Error(`Study not found: ${studyId}`)
+  await saveState(paths.state, { ...state, studies })
+  return { studyId, field, statePath: paths.state }
 }
 
 export const listStudies = async (
