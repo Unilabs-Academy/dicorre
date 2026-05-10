@@ -12,6 +12,7 @@ import {
   send,
   setCustomField,
   showConfig,
+  mergeStudies,
   validateConfig,
 } from './commands'
 
@@ -77,6 +78,7 @@ const help = () => ({
     'dicorre project-clear [--workspace .dicorre]',
     'dicorre field-set <study-uid> <field> <value> [--workspace .dicorre] [--state state.json]',
     'dicorre field-clear <study-uid> <field> [--workspace .dicorre] [--state state.json]',
+    'dicorre study-merge <study-uid> <study-uid> [...study-uid] [--workspace .dicorre] [--state state.json]',
   ],
 })
 
@@ -128,6 +130,8 @@ export const runCli = async (argv: string[]): Promise<unknown> => {
         throw new Error('field-clear requires a study id and field')
       }
       return clearCustomField(parsed.positionals[0], parsed.positionals[1], { workspace, state })
+    case 'study-merge':
+      return mergeStudies(parsed.positionals, { workspace, state })
     case 'help':
     default:
       return help()

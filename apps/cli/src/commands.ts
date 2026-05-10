@@ -379,6 +379,36 @@ export const clearCustomField = async (
   return { studyId, field, statePath: paths.state }
 }
 
+export const mergeStudies = async (
+  studyIds: string[],
+  options: { readonly workspace?: string; readonly state?: string } = {},
+): Promise<{ studyId: string; merged: number; statePath: string }> => {
+  if (studyIds.length < 2) throw new Error('study-merge requires at least two study ids')
+
+  const paths = resolveCliPaths(options.workspace, options.state)
+  const state = await loadState(paths.state)
+  const selected = selectStudies(state.studies, studyIds)
+  if (selected.length < 2) throw new Error('study-merge matched fewer than two studies')
+
+  const target = selected[0]
+  const selectedKeys = new Set(selected.flatMap((study) => [study.id, study.studyInstanceUID]))
+  const mergedStudy = {
+    ...target,
+    customFields: {
+      ...(target.customFields ?? {}),
+      'Study Instance UID': target.studyInstanceUID,
+    },
+    series: selected.flatMap((study) => study.series),
+  }
+
+  const studies = [
+    mergedStudy,
+    ...state.studies.filter((study) => !selectedKeys.has(study.id) && !selectedKeys.has(study.studyInstanceUID)),
+  ]
+  await saveState(paths.state, { ...state, studies })
+  return { studyId: target.studyInstanceUID, merged: selected.length, statePath: paths.state }
+}
+
 export const listStudies = async (
   options: { readonly workspace?: string; readonly state?: string } = {},
 ) => {

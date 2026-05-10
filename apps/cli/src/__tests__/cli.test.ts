@@ -187,5 +187,19 @@ describe('dicorre CLI', () => {
 
     expect(ingest.filesParsed).toBe(2)
     expect(ingest.studies).toBe(2)
+
+    const studies = await runCli(['studies', '--workspace', workspace]) as Array<{ studyInstanceUID: string }>
+    const merged = await runCli([
+      'study-merge',
+      studies[0].studyInstanceUID,
+      studies[1].studyInstanceUID,
+      '--workspace',
+      workspace,
+    ]) as { merged: number }
+    expect(merged.merged).toBe(2)
+
+    const afterMerge = await runCli(['studies', '--workspace', workspace]) as Array<{ files: number }>
+    expect(afterMerge).toHaveLength(1)
+    expect(afterMerge[0].files).toBe(2)
   })
 })
