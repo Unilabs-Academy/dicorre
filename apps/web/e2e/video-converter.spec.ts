@@ -16,7 +16,7 @@ test.describe('Video Converter Plugin', () => {
   });
 
   test('converts WebM to DICOM series', async ({ page }) => {
-    const repoRoot = process.cwd();
+    const repoRoot = path.resolve(process.cwd(), '../..');
     // The reason we don't use an mp4 with h.264 codec here is because that codec is not
     // included in Chromium which tests usually run on so we just test with a webm.
     // mp4 is in the same location available for manual testing.
@@ -37,7 +37,7 @@ test.describe('Video Converter Plugin', () => {
   });
 
   test('converts and anonymizes the video series', async ({ page }) => {
-    const repoRoot = process.cwd();
+    const repoRoot = path.resolve(process.cwd(), '../..');
     const testVideoWebmPath = path.join(repoRoot, 'test-data/CASES/CasoV_with_only_video/Video/test-video.webm');
 
     await uploadFiles(page, testVideoWebmPath);

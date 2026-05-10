@@ -9,9 +9,9 @@ import { join } from 'path'
 import { FileHandler, FileHandlerLive } from './index'
 import { PluginRegistryLive } from '../pluginRegistry'
 
-const fixturePath = join(process.cwd(), 'test-data', 'CASES', 'mixed_sip_minimal.zip')
-const rarFixturePath = join(process.cwd(), 'test-data', 'CASES', 'mixed_sip_minimal.rar')
-const invalidRarFixturePath = join(process.cwd(), 'test-data', 'CASES', 'mixed_sip_no_valid.rar')
+const fixturePath = join(process.cwd(), '../../test-data', 'CASES', 'mixed_sip_minimal.zip')
+const rarFixturePath = join(process.cwd(), '../../test-data', 'CASES', 'mixed_sip_minimal.rar')
+const invalidRarFixturePath = join(process.cwd(), '../../test-data', 'CASES', 'mixed_sip_no_valid.rar')
 const liveLayer = FileHandlerLive.pipe(Layer.provide(PluginRegistryLive))
 
 const runTest = <A, E>(effect: Effect.Effect<A, E, FileHandler>) =>

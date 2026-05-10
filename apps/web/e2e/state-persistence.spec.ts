@@ -5,7 +5,7 @@ import { uploadFiles } from './helpers'
 test('persists uploaded files and UI state across page reload', async ({ page }) => {
   await page.goto('/')
 
-  const testZipPath = path.join(process.cwd(), 'test-data/CASES/1_case_3_series_6_images.zip')
+  const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip')
   await uploadFiles(page, testZipPath)
 
   // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)

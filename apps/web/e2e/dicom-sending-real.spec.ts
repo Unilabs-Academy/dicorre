@@ -14,7 +14,7 @@ test.describe('DICOM Sending with Real Orthanc Server', () => {
     
     await page.waitForSelector('[data-sonner-toast]', { timeout: 5000 })
 
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/1_case_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip')
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)

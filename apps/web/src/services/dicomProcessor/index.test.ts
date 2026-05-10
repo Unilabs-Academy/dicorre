@@ -7,7 +7,7 @@ import type { DicomFile } from '@/types/dicom'
 
 // Helper to load DICOM files from test-data
 function loadTestDicomFile(relativePath: string): DicomFile {
-  const fullPath = join(process.cwd(), 'test-data', relativePath)
+  const fullPath = join(process.cwd(), '../../test-data', relativePath)
   const buffer = readFileSync(fullPath)
   const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
   

@@ -7,7 +7,7 @@ test.describe('DICOM Sending E2E Tests', () => {
   test('complete workflow: upload, anonymize, and send', async ({ page }) => {
     await page.goto('/')
 
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/1_case_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip')
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
@@ -56,7 +56,7 @@ test.describe('DICOM Sending E2E Tests', () => {
   test('handles server errors gracefully', async ({ page }) => {
     await page.goto('/')
 
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/1_case_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip')
     await uploadFiles(page, testZipPath)
     
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)

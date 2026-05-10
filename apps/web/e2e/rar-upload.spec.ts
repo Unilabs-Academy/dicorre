@@ -6,7 +6,7 @@ test('uploads RAR archive and anonymizes extracted DICOM files', async ({ page }
   await page.goto('/')
   await waitForAppReady(page)
 
-  const testRarPath = path.join(process.cwd(), 'test-data/CASES/mixed_sip_minimal.rar')
+  const testRarPath = path.join(process.cwd(), '../../test-data/CASES/mixed_sip_minimal.rar')
   await uploadFiles(page, testRarPath)
 
   await page.waitForFunction(

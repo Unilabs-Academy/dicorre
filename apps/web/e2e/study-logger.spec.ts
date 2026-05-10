@@ -10,7 +10,7 @@ test.describe('Study Logger - Final Tests', () => {
 
   test('study logger works - logs appear after parsing', async ({ page }) => {
     // Upload test files
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/1_case_3_series_6_images.zip');
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip');
     await uploadFiles(page, testZipPath);
 
     // Wait for processing to complete
@@ -59,7 +59,7 @@ test.describe('Study Logger - Final Tests', () => {
 
   test('study logger shows empty state when no logs exist', async ({ page }) => {
     // Upload files but don't process them long enough to generate logs
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/1_case_3_series_6_images.zip');
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip');
     await uploadFiles(page, testZipPath);
 
     // Immediately try to open log sheet before processing completes
@@ -92,7 +92,7 @@ test.describe('Study Logger - Final Tests', () => {
 
   test('study logger handles multiple files correctly', async ({ page }) => {
     // Upload multiple studies
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/3_cases_each_with_3_series_6_images.zip');
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/3_cases_each_with_3_series_6_images.zip');
     await uploadFiles(page, testZipPath);
 
     // Wait for processing

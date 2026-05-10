@@ -14,7 +14,7 @@ import type { AnonymizationConfig } from '@/services/config/schema'
 
 // Helper to load DICOM files from test-data
 function loadTestDicomFile(relativePath: string): DicomFile {
-  const fullPath = join(process.cwd(), 'test-data', relativePath)
+  const fullPath = join(process.cwd(), '../../test-data', relativePath)
   console.log(fullPath)
   const buffer = readFileSync(fullPath)
   const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)

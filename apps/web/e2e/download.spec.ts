@@ -11,7 +11,7 @@ test.describe('Download Functionality', () => {
     await waitForAppReady(page)
 
     // Upload test ZIP file
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/3_cases_each_with_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/3_cases_each_with_3_series_6_images.zip')
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
@@ -79,7 +79,7 @@ test.describe('Download Functionality', () => {
     await page.goto('/')
 
     // Upload and wait for processing
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/3_cases_each_with_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/3_cases_each_with_3_series_6_images.zip')
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
@@ -117,7 +117,7 @@ test.describe('Download Functionality', () => {
     await page.goto('/')
 
     // Upload test data
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/3_cases_each_with_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/3_cases_each_with_3_series_6_images.zip')
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
@@ -154,7 +154,7 @@ test.describe('Download Functionality', () => {
     await page.goto('/')
 
     // Upload test data
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/3_cases_each_with_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/3_cases_each_with_3_series_6_images.zip')
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)
@@ -181,7 +181,7 @@ test.describe('Download Functionality', () => {
     await page.goto('/')
 
     // Upload test data
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/3_cases_each_with_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/3_cases_each_with_3_series_6_images.zip')
     await uploadFiles(page, testZipPath)
 
     // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)

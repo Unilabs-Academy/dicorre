@@ -342,7 +342,9 @@ export const FileHandlerLive = Layer.effect(
               import('node:fs/promises'),
               import('node:path'),
             ])
-            const wasmPath = unrarWasmUrl.startsWith('/node_modules/')
+            const wasmPath = unrarWasmUrl.startsWith('/@fs/')
+              ? unrarWasmUrl.slice('/@fs'.length)
+              : unrarWasmUrl.startsWith('/node_modules/')
               ? path.join(process.cwd(), unrarWasmUrl.slice(1))
               : unrarWasmUrl
             const bytes = await readFile(wasmPath)

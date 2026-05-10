@@ -6,7 +6,7 @@ test('uploads single case zip file and checks correct grouping', async ({ page }
   await page.goto('/');
   await waitForAppReady(page);
 
-  const testZipPath = path.join(process.cwd(), 'test-data/CASES/1_case_3_series_6_images.zip');
+  const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip');
   await uploadFiles(page, testZipPath);
 
   // Wait for all processing cards to be hidden (concurrent processing may show multiple cards)

@@ -6,7 +6,7 @@ test('filters mixed SIP archives before anonymization', async ({ page }) => {
   await page.goto('/')
   await waitForAppReady(page)
 
-  const testZipPath = path.join(process.cwd(), 'test-data/CASES/mixed_sip_minimal.zip')
+  const testZipPath = path.join(process.cwd(), '../../test-data/CASES/mixed_sip_minimal.zip')
   await uploadFiles(page, testZipPath)
 
   await page.waitForFunction(

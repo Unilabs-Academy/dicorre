@@ -222,7 +222,7 @@ test.describe('WebMCP agent mode', () => {
       fileInputSelector: '[data-testid="toolbar-file-input"]',
     })
 
-    const testZipPath = path.join(process.cwd(), 'test-data/CASES/1_case_3_series_6_images.zip')
+    const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip')
     await page.locator(prepare.output.fileInputSelector).setInputFiles(testZipPath)
 
     const processed = await executeShimTool(page, 'ratatoskr.process_uploaded_cases', {
