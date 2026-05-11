@@ -44,6 +44,17 @@ pnpm test:e2e --workers=1
 
 See app.config.json
 
+### 5. CLI
+
+The CLI exposes agent-readable JSON help:
+
+```bash
+pnpm --filter @dicorre/cli cli discover
+pnpm --filter @dicorre/cli cli help ingest
+```
+
+See [CLI documentation](docs/cli.md) for workflows, commands, options, and examples.
+
 ## Features
 
 - **DICOM Anonymization**: Remove patient identifiable information from DICOM files

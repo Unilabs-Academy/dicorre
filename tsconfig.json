@@ -2,19 +2,25 @@
   "files": [],
   "references": [
     {
-      "path": "./tsconfig.node.json"
+      "path": "./packages/shared"
     },
     {
-      "path": "./tsconfig.app.json"
+      "path": "./packages/plugins"
     },
     {
-      "path": "./tsconfig.vitest.json"
+      "path": "./apps/web/tsconfig.node.json"
+    },
+    {
+      "path": "./apps/web/tsconfig.app.json"
+    },
+    {
+      "path": "./apps/web/tsconfig.vitest.json"
     }
   ],
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./apps/web/src/*"]
     }
   }
 }

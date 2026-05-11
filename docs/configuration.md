@@ -240,7 +240,7 @@ Custom replacement values for specific DICOM tags.
 
 ### `plugins`
 
-Configures optional plugins for file format conversion and logging.
+Configures optional plugins for file format conversion, logging, notifications, and receipt verification.
 
 ```json
 {
@@ -257,11 +257,29 @@ Configures optional plugins for file format conversion and logging.
       },
       "send-logger": {
         "logLevel": "detailed"
+      },
+      "receipt-verifier": {
+        "provider": "dicomweb-qido",
+        "url": "http://127.0.0.1:8080/dicom-web",
+        "archive": 1,
+        "headers": {},
+        "auth": null,
+        "pollIntervalMs": 10000,
+        "timeoutMs": 60000,
+        "requireInstanceCountMatch": true
       }
     }
   }
 }
 ```
+
+`receipt-verifier` is disabled unless its plugin ID is included in `plugins.enabled`. Supported providers:
+
+- `dicomweb-qido`: generic QIDO-RS study search. It queries by Study Instance UID first, then accession/patient fallback.
+- `orthanc-dicomweb`: alias for `dicomweb-qido` with Orthanc-style DICOMweb configuration.
+- `pacscenter`: PACScenter study search API plus optional detail lookup for image counts.
+
+Secret-bearing `headers` and `auth` values can be used for verification requests; UI and log summaries should only display header names or auth presence.
 
 ## Configuration File Format
 

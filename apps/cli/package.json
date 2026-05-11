@@ -1,0 +1,33 @@
+{
+  "name": "@dicorre/cli",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "dicorre": "./src/index.ts"
+  },
+  "scripts": {
+    "cli": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test:unit": "vitest --run",
+    "lint": "eslint . --fix",
+    "format": "prettier --write src/"
+  },
+  "dependencies": {
+    "@dicorre/plugins": "workspace:*",
+    "@dicorre/shared": "workspace:*",
+    "@zip.js/zip.js": "^2.8.20",
+    "effect": "^3.17.2",
+    "jszip": "^3.10.1",
+    "node-unrar-js": "^2.0.2"
+  },
+  "devDependencies": {
+    "@tsconfig/node22": "^22.0.2",
+    "@types/node": "^22.15.32",
+    "tsx": "^4.20.3",
+    "typescript": "~5.8.0",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "@dicorre/plugins",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./web": "./src/web/index.ts",
+    "./node": "./src/node/index.ts",
+    "./common/*": "./src/common/*.ts",
+    "./web/*": "./src/web/*.ts",
+    "./node/*": "./src/node/*.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "test:unit": "vitest --run",
+    "lint": "eslint . --fix",
+    "format": "prettier --write src/"
+  },
+  "dependencies": {
+    "@dicorre/shared": "workspace:*",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@napi-rs/canvas": "^0.1.82",
+    "effect": "^3.17.2",
+    "pdfjs-dist": "^5.4.54",
+    "sharp": "^0.34.4"
+  },
+  "devDependencies": {
+    "@tsconfig/node22": "^22.0.2",
+    "@types/node": "^22.15.32",
+    "typescript": "~5.8.0",
+    "vitest": "^3.2.4"
+  }
+}

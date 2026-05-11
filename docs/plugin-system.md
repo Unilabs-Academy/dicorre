@@ -59,6 +59,12 @@ Logs DICOM send operations to console:
 - afterSend: Logs successful transmission
 - onSendError: Logs transmission errors
 
+### Receipt Verifier
+Verifies that a successfully sent study is visible in a receiving system:
+- afterSend: Runs only after all files in a study send successfully
+- Providers: generic DICOMweb/QIDO, Orthanc via DICOMweb, and PACScenter
+- Results: Persisted separately from send success and shown in CLI JSON and the web `Received` column
+
 ## Configuration
 
 Enable plugins in `app.config.json`:
@@ -66,10 +72,15 @@ Enable plugins in `app.config.json`:
 ```json
 {
   "plugins": {
-    "enabled": ["image-converter", "send-logger"],
+    "enabled": ["image-converter", "send-logger", "receipt-verifier"],
     "settings": {
       "image-converter": {
         "defaultModality": "OT"
+      },
+      "receipt-verifier": {
+        "provider": "dicomweb-qido",
+        "url": "http://127.0.0.1:8080/dicom-web",
+        "timeoutMs": 60000
       }
     }
   }
