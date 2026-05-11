@@ -1,31 +1,47 @@
 {
   "name": "@dicorre/cli",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.0.1",
+  "private": false,
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
-    "dicorre": "./src/index.ts"
+    "dicorre": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "cli": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node build.mjs",
+    "prepack": "pnpm run build",
     "type-check": "tsc -p tsconfig.json --noEmit",
     "test:unit": "vitest --run",
     "lint": "eslint . --fix",
     "format": "prettier --write src/"
   },
   "dependencies": {
-    "@dicorre/plugins": "workspace:*",
-    "@dicorre/shared": "workspace:*",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@napi-rs/canvas": "^0.1.82",
+    "@umessen/dicom-deidentifier": "1.0.0-beta.4",
     "@zip.js/zip.js": "^2.8.20",
+    "dcmjs": "^0.43.1",
     "effect": "^3.17.2",
     "jszip": "^3.10.1",
-    "node-unrar-js": "^2.0.2"
+    "node-unrar-js": "^2.0.2",
+    "pdfjs-dist": "^5.4.54",
+    "sharp": "^0.34.4"
   },
   "devDependencies": {
     "@tsconfig/node22": "^22.0.2",
     "@types/node": "^22.15.32",
+    "esbuild": "^0.25.8",
     "tsx": "^4.20.3",
     "typescript": "~5.8.0",
     "vitest": "^3.2.4"

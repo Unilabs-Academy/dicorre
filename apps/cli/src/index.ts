@@ -1,5 +1,7 @@
-#!/usr/bin/env -S pnpm exec tsx
+#!/usr/bin/env node
 import { webcrypto } from 'node:crypto'
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import {
   anonymize,
   clearCustomField,
@@ -154,7 +156,7 @@ const COMMANDS: CommandHelp[] = [
     usage: 'dicorre config-validate <config.json> [--workspace <dir>]',
     arguments: [{ name: 'config.json', description: 'Config file to validate.', required: true }],
     options: [GLOBAL_OPTIONS[0]],
-    examples: ['dicorre config-validate packages/shared/app.config.json'],
+    examples: ['dicorre config-validate project.config.json'],
     output: 'JSON { "valid": true } on success; exits non-zero on invalid config.',
   },
   {
@@ -365,7 +367,16 @@ export const runCli = async (argv: string[]): Promise<unknown> => {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isCliEntrypoint = (): boolean => {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+  } catch {
+    return false
+  }
+}
+
+if (isCliEntrypoint()) {
   const originalLog = console.log
   console.log = (...args: unknown[]) => console.error(...args)
 

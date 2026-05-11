@@ -12,6 +12,8 @@
     "baseUrl": ".",
     "paths": {
       "@dicorre/cli/*": ["./src/*"],
+      "@dicorre/shared": ["../../packages/shared/src/index.ts"],
+      "@dicorre/shared/*": ["../../packages/shared/src/*"],
       "@dicorre/plugins": ["../../packages/plugins/src/index.ts"],
       "@dicorre/plugins/*": ["../../packages/plugins/src/*"]
     }
