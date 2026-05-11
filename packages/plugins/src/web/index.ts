@@ -2,6 +2,7 @@ import { Effect } from 'effect'
 import { PluginRegistry } from '@dicorre/shared/services/pluginRegistry'
 import type { Plugin, PluginConfig } from '@dicorre/shared/types/plugins'
 import { sendLoggerPlugin } from '../common/sendLogger'
+import { receiptVerifierPlugin } from '../common/receiptVerifier'
 import { sentNotifierPlugin } from '../common/sentNotifier'
 import { imageConverterPlugin } from './imageConverter'
 import { pdfConverterPlugin } from './pdfConverter'
@@ -12,6 +13,7 @@ export const webPlugins: Plugin[] = [
   pdfConverterPlugin,
   videoConverterPlugin,
   sendLoggerPlugin,
+  receiptVerifierPlugin,
   sentNotifierPlugin,
 ]
 
@@ -32,5 +34,6 @@ export {
   pdfConverterPlugin,
   videoConverterPlugin,
   sendLoggerPlugin,
+  receiptVerifierPlugin,
   sentNotifierPlugin,
 }

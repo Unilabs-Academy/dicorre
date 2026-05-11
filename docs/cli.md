@@ -179,6 +179,7 @@ The CLI loads plugins from the active config's `plugins.enabled` list, matching 
 - `video-converter`: samples MP4, WebM, and OGV frames with the packaged ffmpeg binary.
 - `send-logger`: exposes `beforeSend`, `afterSend`, and `onSendError` hooks.
 - `sent-notifier`: POSTs `study_instance_uid` and project params after successful sends.
+- `receipt-verifier`: after a clean send, verifies the study is visible in a configured DICOMweb/QIDO, Orthanc, or PACScenter receipt backend.
 
 Plugin settings come from `plugins.settings.<plugin-id>` in the active config. File-format plugins are used by `ingest`; send hooks are used by `send`. Hook failures are reported to stderr and do not replace the command's JSON stdout.
 
@@ -229,7 +230,42 @@ Output:
   "studies": 1,
   "succeeded": 2,
   "failed": 0,
-  "skipped": 0
+  "skipped": 0,
+  "verification": [
+    {
+      "studyInstanceUID": "1.2.840.example",
+      "state": "verified",
+      "attempts": 1,
+      "checkedAt": "2026-05-11T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+When `receipt-verifier` is enabled, DICOM send success remains the command success condition. Verification failures, timeouts, or pending states are returned in the `verification` block and do not make a successful send exit as failed.
+
+### `verify`
+
+Re-check selected studies against the configured receipt backend without resending files.
+
+```bash
+dicorre verify [--study <all|uid[,uid]>] [--wait] [--timeout <duration>] [--workspace <dir>] [--state <file>] [--config <config.json>]
+```
+
+Use `--wait` to poll until the study is found or the timeout is reached. Durations accept milliseconds, `s`, or `m`, for example `60000`, `60s`, or `15m`.
+
+Pending or timeout records include a `nextCommand` that can be run later:
+
+```json
+{
+  "studies": 1,
+  "verification": [
+    {
+      "studyInstanceUID": "1.2.840.example",
+      "state": "timeout",
+      "nextCommand": "dicorre verify --study 1.2.840.example --workspace .dicorre/case-001 --config project.config.json"
+    }
+  ]
 }
 ```
 
@@ -327,6 +363,13 @@ Plugin enablement lives in the same config:
         "maxFrames": 500,
         "outputMaxWidth": 1920,
         "outputMaxHeight": 1080
+      },
+      "receipt-verifier": {
+        "provider": "dicomweb-qido",
+        "url": "http://127.0.0.1:8080/dicom-web",
+        "pollIntervalMs": 10000,
+        "timeoutMs": 60000,
+        "requireInstanceCountMatch": true
       }
     }
   }

@@ -68,6 +68,16 @@
         "url": "https://example.org/api/sent",
         "authHeaderName": "x-api-key",
         "authHeaderValue": "YOUR_KEY"
+      },
+      "receipt-verifier": {
+        "provider": "dicomweb-qido",
+        "url": "/api/orthanc/dicom-web",
+        "archive": 1,
+        "headers": {},
+        "auth": null,
+        "pollIntervalMs": 10000,
+        "timeoutMs": 60000,
+        "requireInstanceCountMatch": true
       }
     }
   }

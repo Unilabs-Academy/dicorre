@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ArrowUp, ArrowDown, Edit, FileSearch, FileText } from 'lucide-vue-next'
 import StudyProgressIndicator from '@/components/StudyProgressIndicator.vue'
+import ReceiptVerificationIndicator from '@/components/ReceiptVerificationIndicator.vue'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 
 export const columns: ColumnDef<DicomStudy>[] = [
@@ -302,6 +303,37 @@ export const columns: ColumnDef<DicomStudy>[] = [
         sentFiles,
         showOnly: 'sending',
         'data-testid': 'cell-sent'
+      })
+    },
+  },
+  {
+    id: 'received',
+    accessorFn: row => {
+      const totalFiles = row.series.reduce((sum, s) => sum + s.files.length, 0)
+      const sentFiles = row.series.reduce((sum, s) => sum + s.files.filter(f => f.sent).length, 0)
+      return totalFiles > 0 && sentFiles === totalFiles ? 1 : 0
+    },
+    header: ({ column }) => {
+      return h(Button, {
+        variant: 'ghost',
+        class: '-mx-2 px-2 h-auto font-normal hover:bg-transparent flex items-center',
+        onClick: () => column.toggleSorting(column.getIsSorted() === 'asc'),
+      }, () => [
+        h('span', {}, 'Received'),
+        column.getIsSorted() ? h(
+          column.getIsSorted() === 'asc' ? ArrowUp : ArrowDown,
+          { class: 'ml-1 h-3 w-3 opacity-50' }
+        ) : null
+      ])
+    },
+    cell: ({ row }) => {
+      const study = row.original
+      const totalFiles = study.series.reduce((sum, s) => sum + s.files.length, 0)
+      const sentFiles = study.series.reduce((sum, s) => sum + s.files.filter(f => f.sent).length, 0)
+      return h(ReceiptVerificationIndicator, {
+        studyId: study.studyInstanceUID,
+        totalFiles,
+        sentFiles,
       })
     },
   },

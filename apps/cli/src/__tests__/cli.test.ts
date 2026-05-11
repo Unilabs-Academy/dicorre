@@ -20,6 +20,7 @@ const makeWorkspace = async () => {
 const makeDicomWebServer = async () => {
   let posts = 0
   let notifications = 0
+  let qidoSearches = 0
   const server = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/dicom-web/studies') {
       posts++
@@ -33,6 +34,18 @@ const makeDicomWebServer = async () => {
       req.resume()
       res.writeHead(204)
       res.end()
+      return
+    }
+    if (req.method === 'GET' && req.url?.startsWith('/dicom-web/studies')) {
+      qidoSearches++
+      const url = new URL(req.url, 'http://127.0.0.1')
+      const studyInstanceUID = url.searchParams.get('StudyInstanceUID') || '1.2.3.test'
+      res.writeHead(200, { 'content-type': 'application/dicom+json' })
+      res.end(JSON.stringify([{
+        '0020000D': { vr: 'UI', Value: [studyInstanceUID] },
+        '00080061': { vr: 'CS', Value: ['MR'] },
+        '00201208': { vr: 'IS', Value: ['1'] },
+      }]))
       return
     }
     res.writeHead(404)
@@ -50,6 +63,9 @@ const makeDicomWebServer = async () => {
     },
     get notifications() {
       return notifications
+    },
+    get qidoSearches() {
+      return qidoSearches
     },
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve())
@@ -120,6 +136,14 @@ describe('dicorre CLI', () => {
     }
     config.plugins.settings['sent-notifier'].url = server.sentUrl
     config.plugins.settings['sent-notifier'].authHeaderValue = 'test-key'
+    config.plugins.enabled = [...new Set([...config.plugins.enabled, 'receipt-verifier'])]
+    config.plugins.settings['receipt-verifier'] = {
+      provider: 'dicomweb-qido',
+      url: server.url,
+      pollIntervalMs: 1,
+      timeoutMs: 1,
+      requireInstanceCountMatch: true,
+    }
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
 
     try {
@@ -131,11 +155,31 @@ describe('dicorre CLI', () => {
         'all',
         '--config',
         configPath,
-      ]) as { succeeded: number; failed: number; skipped: number }
+      ]) as {
+        succeeded: number
+        failed: number
+        skipped: number
+        verification?: Array<{ state: string; nextCommand?: string }>
+      }
 
       expect(send).toMatchObject({ succeeded: 1, failed: 0, skipped: 0 })
+      expect(send.verification?.[0]).toMatchObject({ state: 'verified' })
+      expect(send.verification?.[0]?.nextCommand).toBeUndefined()
       expect(server.posts).toBe(1)
       expect(server.notifications).toBe(1)
+      expect(server.qidoSearches).toBe(1)
+
+      const verify = await runCli([
+        'verify',
+        '--workspace',
+        workspace,
+        '--study',
+        'all',
+        '--config',
+        configPath,
+      ]) as { verification: Array<{ state: string; nextCommand?: string }> }
+
+      expect(verify.verification[0]).toMatchObject({ state: 'verified' })
     } finally {
       await server.close()
     }

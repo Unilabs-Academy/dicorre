@@ -15,6 +15,7 @@ import {
   showConfig,
   mergeStudies,
   validateConfig,
+  verify,
 } from './commands'
 
 if (!globalThis.crypto) {
@@ -44,6 +45,8 @@ const GLOBAL_OPTIONS = [
 
 const CONFIG_OPTION = { name: '--config', value: '<config.json>', description: 'Load this config for the command run.' } as const
 const CONCURRENCY_OPTION = { name: '--concurrency', value: '<number>', description: 'Maximum concurrent file operations.', default: '3' } as const
+const WAIT_OPTION = { name: '--wait', description: 'Poll until verification succeeds or timeout is reached.' } as const
+const TIMEOUT_OPTION = { name: '--timeout', value: '<duration>', description: 'Verification timeout, for example 60000, 60s, or 15m.' } as const
 const STUDY_OPTION = {
   name: '--study',
   value: '<all|uid[,uid]>',
@@ -132,7 +135,18 @@ const COMMANDS: CommandHelp[] = [
     usage: 'dicorre send [--study <all|uid[,uid]>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--concurrency <number>]',
     options: [STUDY_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION, CONCURRENCY_OPTION],
     examples: ['dicorre send --study all --config orthanc.config.json --workspace .dicorre/case-001'],
-    output: 'JSON summary with studies, succeeded, failed, and skipped file counts.',
+    output: 'JSON summary with studies, succeeded, failed, skipped, and receipt verification records when available.',
+  },
+  {
+    name: 'verify',
+    summary: 'Verify selected sent studies are visible in the configured receipt backend without resending.',
+    usage: 'dicorre verify [--study <all|uid[,uid]>] [--wait] [--timeout <duration>] [--workspace <dir>] [--state <file>] [--config <config.json>]',
+    options: [STUDY_OPTION, WAIT_OPTION, TIMEOUT_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION],
+    examples: [
+      'dicorre verify --study all --workspace .dicorre/case-001',
+      'dicorre verify --study 1.2.840.example --wait --timeout 15m --config project.config.json',
+    ],
+    output: 'JSON summary with per-study receipt verification records.',
   },
   {
     name: 'config-validate',
@@ -313,6 +327,14 @@ export const runCli = async (argv: string[]): Promise<unknown> => {
       return download(asStudies(parsed.options.study), { workspace, state, out: asString(parsed.options.out) })
     case 'send':
       return send(asStudies(parsed.options.study), { workspace, state, config, concurrency })
+    case 'verify':
+      return verify(asStudies(parsed.options.study), {
+        workspace,
+        state,
+        config,
+        wait: parsed.options.wait === true,
+        timeout: asString(parsed.options.timeout),
+      })
     case 'config-validate':
       if (!parsed.positionals[0]) throw new Error('config-validate requires a config path')
       return validateConfig(parsed.positionals[0], { workspace })

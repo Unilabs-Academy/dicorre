@@ -237,7 +237,8 @@ export const appConfigEditSchema: ConfigEditSchema = {
         { value: 'pdf-converter', label: 'PDF Converter' },
         { value: 'video-converter', label: 'Video Converter' },
         { value: 'send-logger', label: 'Send Logger' },
-        { value: 'sent-notifier', label: 'Sent Notifier' }
+        { value: 'sent-notifier', label: 'Sent Notifier' },
+        { value: 'receipt-verifier', label: 'Receipt Verifier' }
       ]
     },
     settings: {

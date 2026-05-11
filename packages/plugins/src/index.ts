@@ -1,4 +1,5 @@
 export * from './common/sendLogger'
+export * from './common/receiptVerifier'
 export * from './common/sentNotifier'
 export * from './web'
 export * from './node'

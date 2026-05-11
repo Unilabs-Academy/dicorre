@@ -8,6 +8,7 @@ import { ConfigPersistenceLocalStorage } from '../config/configPersistence'
 import { FileHandlerLive } from '../fileHandler'
 import { OPFSStorageLive } from '../opfsStorage'
 import { PluginRegistryLive } from '../pluginRegistry'
+import { ReceiptVerificationServiceLive } from '../receiptVerification'
 import { DicomProcessorLive } from '../dicomProcessor'
 import { AnonymizerLive } from '../anonymizer'
 import { DicomSenderLive } from '../dicomSender'
@@ -15,6 +16,7 @@ import { DownloadServiceLive } from '../downloadService'
 import { SessionPersistenceLive } from '../sessionPersistence'
 import { StudyLoggerLive } from '../studyLogger'
 import { StudyLoggerPersistenceLocalStorage } from '../studyLogger/persistence'
+import { ReceiptVerificationPersistenceLocalStorage } from '../studyLogger/persistence'
 
 /**
  * Base services with no dependencies
@@ -24,7 +26,8 @@ export const BaseServicesLayer = Layer.mergeAll(
   PluginRegistryLive,
   OPFSStorageLive,
   SessionPersistenceLive,
-  StudyLoggerLive.pipe(Layer.provide(StudyLoggerPersistenceLocalStorage))
+  StudyLoggerLive.pipe(Layer.provide(StudyLoggerPersistenceLocalStorage)),
+  ReceiptVerificationServiceLive.pipe(Layer.provide(ReceiptVerificationPersistenceLocalStorage))
 )
 
 /**
@@ -59,7 +62,8 @@ export const AppLayer = Layer.mergeAll(
   AnonymizerLive.pipe(Layer.provide(DicomProcessorLive)),
   DicomSenderLive,
   DownloadServiceLive.pipe(Layer.provide(OPFSStorageLive)),
-  StudyLoggerLive.pipe(Layer.provide(StudyLoggerPersistenceLocalStorage))
+  StudyLoggerLive.pipe(Layer.provide(StudyLoggerPersistenceLocalStorage)),
+  ReceiptVerificationServiceLive.pipe(Layer.provide(ReceiptVerificationPersistenceLocalStorage))
 ).pipe(
   Layer.provideMerge(Layer.mergeAll(
     FileHandlerLive.pipe(Layer.provide(PluginRegistryLive))
@@ -77,4 +81,3 @@ export const DicomProcessorLayer = DicomProcessorLive.pipe(Layer.provide(BaseSer
 export const AnonymizerLayer = AnonymizerLive.pipe(Layer.provide(DicomProcessorLive))
 export const DicomSenderLayer = DicomSenderLive
 export const DownloadServiceLayer = DownloadServiceLive.pipe(Layer.provide(OPFSStorageLive))
-

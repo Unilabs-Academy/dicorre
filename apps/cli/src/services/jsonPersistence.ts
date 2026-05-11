@@ -5,6 +5,7 @@ import { ConfigPersistence } from '@dicorre/shared/services/config/configPersist
 import type { AppConfig } from '@dicorre/shared/services/config/schema'
 import { StudyLoggerPersistence } from '@dicorre/shared/services/studyLogger/persistence'
 import type { StudyLogEntry } from '@dicorre/shared/services/studyLogger'
+import { ReceiptVerificationPersistence, type ReceiptVerificationRecord } from '@dicorre/shared/services/receiptVerification'
 
 const readJson = <A>(filePath: string): Effect.Effect<A | null, never> =>
   Effect.tryPromise({
@@ -42,6 +43,20 @@ export const JsonStudyLoggerPersistenceLive = (workspaceDir: string) => {
       ),
       save: (logs) => writeJson(logsPath, Object.fromEntries(logs)),
       clear: Effect.promise(() => rm(logsPath, { force: true })).pipe(Effect.catchAll(() => Effect.void)),
+    }),
+  )
+}
+
+export const JsonReceiptVerificationPersistenceLive = (workspaceDir: string) => {
+  const receiptPath = path.join(workspaceDir, 'receipt-verification.json')
+  return Layer.succeed(
+    ReceiptVerificationPersistence,
+    ReceiptVerificationPersistence.of({
+      load: readJson<Record<string, ReceiptVerificationRecord>>(receiptPath).pipe(
+        Effect.map((records) => (records ? new Map(Object.entries(records)) : null)),
+      ),
+      save: (records) => writeJson(receiptPath, Object.fromEntries(records)),
+      clear: Effect.promise(() => rm(receiptPath, { force: true })).pipe(Effect.catchAll(() => Effect.void)),
     }),
   )
 }

@@ -10,6 +10,7 @@ import { DicomSender } from '@dicorre/shared/services/dicomSender'
 import { DownloadService } from '@dicorre/shared/services/downloadService'
 import { FileStorage } from '@dicorre/shared/services/fileStorage'
 import { PluginRegistry } from '@dicorre/shared/services/pluginRegistry'
+import { ReceiptVerificationService, type ReceiptVerificationRecord, type ReceiptVerificationSettings } from '@dicorre/shared/services/receiptVerification'
 import type { DicomFile, DicomStudy } from '@dicorre/shared/types/dicom'
 import type { HookPlugin } from '@dicorre/shared/types/plugins'
 import { isFileFormatPlugin, isHookPlugin } from '@dicorre/shared/types/plugins'
@@ -53,6 +54,12 @@ export interface SendSummary {
   readonly succeeded: number
   readonly failed: number
   readonly skipped: number
+  readonly verification?: ReceiptVerificationRecord[]
+}
+
+export interface VerifySummary {
+  readonly studies: number
+  readonly verification: ReceiptVerificationRecord[]
 }
 
 export interface ConfigSummary {
@@ -147,6 +154,63 @@ const runCliHook = <R>(
       }),
     ),
   )
+}
+
+const buildReceiptVerifierSettings = (appConfig: any): ReceiptVerificationSettings | undefined => {
+  const pluginSettings = appConfig.plugins?.settings?.['receipt-verifier'] || {}
+  const provider = pluginSettings.provider || 'dicomweb-qido'
+  const url = pluginSettings.url || (provider === 'dicomweb-qido' || provider === 'orthanc-dicomweb'
+    ? appConfig.dicomServer?.url
+    : undefined)
+  if (!url) return undefined
+  return {
+    provider,
+    url,
+    archive: Number.isFinite(Number(pluginSettings.archive)) ? Number(pluginSettings.archive) : undefined,
+    headers: pluginSettings.headers || appConfig.dicomServer?.headers || {},
+    auth: pluginSettings.auth ?? appConfig.dicomServer?.auth ?? null,
+    pollIntervalMs: Number.isFinite(Number(pluginSettings.pollIntervalMs)) ? Number(pluginSettings.pollIntervalMs) : undefined,
+    timeoutMs: Number.isFinite(Number(pluginSettings.timeoutMs)) ? Number(pluginSettings.timeoutMs) : undefined,
+    requireInstanceCountMatch: pluginSettings.requireInstanceCountMatch === true,
+  }
+}
+
+const withNextCommand = (
+  record: ReceiptVerificationRecord,
+  workspace: string,
+  config?: string,
+): ReceiptVerificationRecord => {
+  if (record.state === 'verified') return { ...record, nextCommand: undefined }
+  const configPart = config ? ` --config ${config}` : ''
+  return {
+    ...record,
+    nextCommand: `dicorre verify --study ${record.studyInstanceUID} --workspace ${workspace}${configPart}`,
+  }
+}
+
+const parseDurationMs = (value: string | undefined): number | undefined => {
+  if (!value) return undefined
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)(ms|s|m)?$/)
+  if (!match) return Number(value)
+  const amount = Number(match[1])
+  const unit = match[2] || 'ms'
+  if (unit === 'm') return amount * 60_000
+  if (unit === 's') return amount * 1000
+  return amount
+}
+
+const redactPluginSettings = (
+  pluginId: string,
+  settings: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  if (!settings || pluginId !== 'receipt-verifier') return settings
+  const headers = settings.headers && typeof settings.headers === 'object'
+    ? Object.fromEntries(Object.keys(settings.headers as Record<string, unknown>).map((name) => [name, '<redacted>']))
+    : settings.headers
+  const auth = settings.auth && typeof settings.auth === 'object'
+    ? { type: (settings.auth as { type?: unknown }).type, credentials: '<redacted>' }
+    : settings.auth
+  return { ...settings, headers, auth }
 }
 
 export const ingest = async (
@@ -317,6 +381,7 @@ export const send = async (
     const sender = yield* DicomSender
     const configService = yield* ConfigService
     const registry = yield* PluginRegistry
+    const receiptVerification = yield* ReceiptVerificationService
     const config = yield* configService.getServerConfig
     const hooks = yield* registry.getHookPlugins()
     let succeeded = 0
@@ -366,7 +431,47 @@ export const send = async (
     }
 
     yield* Effect.promise(() => saveState(paths.state, markFilesSent(state, sentIds)))
-    return { studies: selected.length, succeeded, failed, skipped }
+    const verificationRecords = yield* receiptVerification.getAll
+    const verification = selected
+      .map((study) => verificationRecords.get(study.studyInstanceUID))
+      .filter((record): record is ReceiptVerificationRecord => !!record)
+      .map((record) => withNextCommand(record, paths.workspace, options.config))
+    return { studies: selected.length, succeeded, failed, skipped, verification }
+  })
+
+  return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
+}
+
+export const verify = async (
+  studyIds: string[],
+  options: {
+    readonly workspace?: string
+    readonly state?: string
+    readonly config?: string
+    readonly wait?: boolean
+    readonly timeout?: string
+  } = {},
+): Promise<VerifySummary> => {
+  const paths = resolveCliPaths(options.workspace, options.state)
+  const { selected } = await loadSelectedStudies(paths, studyIds)
+  const effect = Effect.gen(function* () {
+    yield* loadConfigIfProvided(options.config)
+    const configService = yield* ConfigService
+    const receiptVerification = yield* ReceiptVerificationService
+    const appConfig = yield* configService.getCurrentConfig
+    const settings = buildReceiptVerifierSettings(appConfig)
+    if (!settings) throw new Error('receipt-verifier settings require a provider URL')
+
+    const verification: ReceiptVerificationRecord[] = []
+    for (const study of selected) {
+      const record = yield* receiptVerification.verifyStudy(study, settings, {
+        wait: options.wait === true,
+        timeoutMs: parseDurationMs(options.timeout),
+        nextCommand: `dicorre verify --study ${study.studyInstanceUID} --workspace ${paths.workspace}${options.config ? ` --config ${options.config}` : ''}`,
+      })
+      verification.push(withNextCommand(record, paths.workspace, options.config))
+    }
+    return { studies: selected.length, verification }
   })
 
   return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
@@ -397,7 +502,7 @@ export const listPlugins = async (
         supportedExtensions: isFileFormatPlugin(plugin) ? [...plugin.supportedExtensions] : undefined,
         supportedMimeTypes: isFileFormatPlugin(plugin) ? [...(plugin.supportedMimeTypes ?? [])] : undefined,
         hooks: isHookPlugin(plugin) ? activeHookNames(plugin) : undefined,
-        settings,
+        settings: redactPluginSettings(plugin.id, settings),
         cli: (plugin as typeof plugin & { cli?: CliPluginContext }).cli,
       })
     }
