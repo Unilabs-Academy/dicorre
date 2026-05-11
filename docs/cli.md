@@ -8,10 +8,29 @@ From the repository, run commands through pnpm:
 pnpm --filter @dicorre/cli cli help
 ```
 
+Build and test the installable package locally before publishing:
+
+```bash
+pnpm --filter @dicorre/cli build
+pnpm --dir apps/cli pack --pack-destination /tmp/dicorre-cli-pack-test
+mkdir -p /tmp/dicorre-cli-install-test
+cd /tmp/dicorre-cli-install-test
+npm init -y
+npm install /tmp/dicorre-cli-pack-test/dicorre-cli-0.0.1.tgz
+./node_modules/.bin/dicorre discover
+```
+
 When installed as a binary, the command shape is:
 
 ```bash
 dicorre help
+```
+
+After publication, agents can use the package without cloning the repository:
+
+```bash
+npx @dicorre/cli discover
+pnpm dlx @dicorre/cli help ingest
 ```
 
 All CLI commands print JSON to stdout. Failed commands write an error message to stderr and exit non-zero.
@@ -349,7 +368,7 @@ Use this when separate inputs should be treated as a single study for downstream
 
 ## Config Notes
 
-The default config lives at `packages/shared/app.config.json`. See [configuration.md](configuration.md) for the full config schema and examples.
+The built-in default config is bundled with the CLI. Use `config-show` to inspect the active workspace config, or pass a project config with `--config <config.json>`. See [configuration.md](configuration.md) for the full config schema and examples.
 
 Plugin enablement lives in the same config:
 

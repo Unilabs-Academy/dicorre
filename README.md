@@ -1,107 +1,151 @@
-<img src="./public/logo.png" alt="Dicorre Logo" width="250">
+<img src="./apps/web/public/logo.png" alt="Dicorre Logo" width="250">
 
 # Dicorre - DICOM Anonymizer & Sender
 
-🚨 **Still in beta - use with caution**
+Dicorre is a pnpm monorepo for anonymizing DICOM studies, packaging anonymized output, and sending cases to DICOMweb destinations.
 
-A browser-based tool for anonymizing DICOM files and sending them to radiology destinations via DICOMweb.
+The project now has two app entrypoints:
 
-Developed by Unilabs Academy to facilitate anonymisation and uploading of cases at https://academy.unilabs.com
+- `apps/web` (`@dicorre/web`): browser UI for interactive case processing.
+- `apps/cli` (`@dicorre/cli`): installable, agent-readable CLI for automated case workflows.
+
+Shared anonymization, DICOM processing, sending, storage contracts, and plugin logic live under `packages/shared` and `packages/plugins`.
+
+Still in beta. Use with caution, especially with real medical data and production DICOM destinations.
 
 ## Quick Start
 
-### 1. Start the Development Server
+Install dependencies from the repo root:
 
 ```bash
-# Install dependencies
 pnpm install
+```
 
-# Start development server
+Start the web app:
+
+```bash
 pnpm dev
 ```
 
-The application will be available at: http://localhost:5173
+The web app runs at http://localhost:5173.
 
-### 2. [OPTIONAL] Start the development DICOM Server (Orthanc)
-
-```bash
-# Start Orthanc DICOM server
-docker-compose up -d
-```
-Access Orthanc web interface at: http://localhost:8080/app/explorer.html
-
-### 3. Testing
+Run the CLI from the workspace:
 
 ```bash
-# Unit tests
-pnpm test:unit
-
-#E2E tests
-pnpm test:e2e --workers=1
+pnpm cli -- discover
+pnpm cli -- help ingest
 ```
 
-### 4. Configuration
+## Web App
 
-See app.config.json
+The web app is a Vue 3 application for interactive workflows:
 
-### 5. CLI
+- Upload DICOM files, ZIP/RAR archives, images, PDFs, and videos.
+- Review grouped studies and metadata.
+- Apply project configuration and anonymization settings.
+- Download anonymized ZIP packages.
+- Send anonymized studies to a configured DICOMweb STOW-RS endpoint.
+- Use WebMCP agent tools for browser-mediated automation.
 
-The CLI exposes agent-readable JSON help:
+Useful commands:
+
+```bash
+pnpm --filter @dicorre/web dev
+pnpm --filter @dicorre/web build
+pnpm --filter @dicorre/web test:unit
+pnpm --filter @dicorre/web test:e2e --workers=1
+```
+
+## CLI App
+
+The CLI provides the same core workflow without a browser. It is designed for agents and automation: commands return JSON on stdout, write errors to stderr, and expose structured command discovery.
+
+Run locally from the repo:
 
 ```bash
 pnpm --filter @dicorre/cli cli discover
 pnpm --filter @dicorre/cli cli help ingest
 ```
 
-See [CLI documentation](docs/cli.md) for workflows, commands, options, and examples.
+Build and test the installable package locally:
+
+```bash
+pnpm --filter @dicorre/cli build
+pnpm --dir apps/cli pack --pack-destination /tmp/dicorre-cli-pack-test
+mkdir -p /tmp/dicorre-cli-install-test
+cd /tmp/dicorre-cli-install-test
+npm init -y
+npm install /tmp/dicorre-cli-pack-test/dicorre-cli-0.0.1.tgz
+./node_modules/.bin/dicorre discover
+```
+
+After publication, expected usage is:
+
+```bash
+npx @dicorre/cli discover
+pnpm dlx @dicorre/cli help ingest
+```
+
+See [CLI documentation](docs/cli.md) for command workflows, options, packaging checks, and agent guidance.
+
+## Development DICOM Server
+
+For local send testing, start Orthanc:
+
+```bash
+docker-compose up -d
+```
+
+Orthanc is available at http://localhost:8080/app/explorer.html.
+
+## Configuration
+
+The default app config is in `packages/shared/app.config.json`. Project-specific configs can be loaded through the web app or passed to CLI commands with `--config <config.json>`.
+
+See [configuration.md](docs/configuration.md) for schema details and examples.
 
 ## Features
 
-- **DICOM Anonymization**: Remove patient identifiable information from DICOM files
-- **DICOMweb Sending**: Send anonymized files to PACS/radiology destinations via STOW-RS
-- **Batch Processing**: Process multiple files and ZIP archives
-- **Plugin Architecture**: Extensible system for format converters and custom processing
-- **Session Persistence**: Automatic save/restore of anonymization progress
-- **Configuration Management**: Save and share project configurations
+- DICOM anonymization with configurable profiles and replacements.
+- DICOMweb STOW-RS sending with retry and large-file handling.
+- ZIP/RAR and directory ingestion.
+- Image, PDF, and video conversion into Secondary Capture DICOM.
+- Study grouping, study merge, custom field overrides, and project metadata.
+- Receipt verification, send logging, and sent notification plugins.
+- Agent-readable CLI discovery and WebMCP browser automation support.
 
 ## Architecture
 
-### Core Services
+The monorepo is organized around app-specific shells and shared core packages:
 
-- **FileHandler**: ZIP extraction, file validation, and grouping by study/series
-- **DicomProcessor**: DICOM parsing with dcmjs, metadata extraction
-- **Anonymizer**: DICOM de-identification with configurable profiles (@umessen/dicom-deidentifier)
-- **DicomSender**: DICOMweb STOW-RS client for sending to PACS
-- **OpfsStorage**: Browser-based file storage using Origin Private File System
-- **SessionPersistence**: Automatic save/restore of session state
-- **ConfigService**: Configuration service with persistance
-- **DownloadService**: Export anonymized files as ZIP
-- **PluginRegistry**: Plugin management system
+- `apps/web`: Vue, Vite, browser storage, UI components, and WebMCP tools.
+- `apps/cli`: Node CLI, filesystem workspace storage, JSON persistence, and npm packaging.
+- `packages/shared`: Effect services for config, anonymization, DICOM parsing/sending, downloads, study logs, receipt verification, and shared types.
+- `packages/plugins`: shared plugin implementations plus web and Node-specific converters.
 
-### Plugins
+Core services include:
 
-- **ImageConverter**: Convert JPEG/PNG images to DICOM images
-- **PdfConverter**: Convert PDF documents to DICOM series
-- **SentNotifier**: Configurable notifier for external system upon hook triggers
-- **SendLogger**: Log all transmitted DICOM files for audit (Example plugin)
-
-### Tech Stack
-
-- **Frontend**: Vue 3 + TypeScript + Effect + Vite
-- **Anonymization**: @umessen/dicom-deidentifier
-- **DICOM Processing**: dcmjs
-- **DICOM Sending**: dicomweb-client
-- **File Handling**: JSZip
+- `ConfigService`: configuration validation, migration, persistence, and project state.
+- `DicomProcessor`: DICOM parsing, validation, metadata extraction, and study grouping.
+- `Anonymizer`: DICOM de-identification using `@umessen/dicom-deidentifier`.
+- `DicomSender`: DICOMweb STOW-RS client and send result handling.
+- `DownloadService`: anonymized ZIP package creation.
+- `PluginRegistry`: file-format and hook plugin management.
 
 ## Development Commands
 
+From the repo root:
+
 ```bash
-# Type checking
 pnpm type-check
-
-# Linting
-pnpm lint
-
-# Build for production
+pnpm test:unit
 pnpm build
+pnpm lint
+```
+
+Target a single app or package with `--filter`, for example:
+
+```bash
+pnpm --filter @dicorre/cli test:unit
+pnpm --filter @dicorre/web build
 ```

@@ -14,15 +14,21 @@ importers:
 
   apps/cli:
     dependencies:
-      '@dicorre/plugins':
-        specifier: workspace:*
-        version: link:../../packages/plugins
-      '@dicorre/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
+      '@ffmpeg-installer/ffmpeg':
+        specifier: ^1.1.0
+        version: 1.1.0
+      '@napi-rs/canvas':
+        specifier: ^0.1.82
+        version: 0.1.100
+      '@umessen/dicom-deidentifier':
+        specifier: 1.0.0-beta.4
+        version: 1.0.0-beta.4
       '@zip.js/zip.js':
         specifier: ^2.8.20
         version: 2.8.20
+      dcmjs:
+        specifier: ^0.43.1
+        version: 0.43.1
       effect:
         specifier: ^3.17.2
         version: 3.17.2
@@ -32,6 +38,12 @@ importers:
       node-unrar-js:
         specifier: ^2.0.2
         version: 2.0.2
+      pdfjs-dist:
+        specifier: ^5.4.54
+        version: 5.4.54
+      sharp:
+        specifier: ^0.34.4
+        version: 0.34.5
     devDependencies:
       '@tsconfig/node22':
         specifier: ^22.0.2
@@ -39,6 +51,9 @@ importers:
       '@types/node':
         specifier: ^22.15.32
         version: 22.16.5
+      esbuild:
+        specifier: ^0.25.8
+        version: 0.25.8
       tsx:
         specifier: ^4.20.3
         version: 4.21.0
@@ -6557,7 +6572,7 @@ snapshots:
 
   node-gyp-build-optional-packages@5.2.2:
     dependencies:
-      detect-libc: 2.0.4
+      detect-libc: 2.1.2
     optional: true
 
   node-html-parser@7.0.1:
