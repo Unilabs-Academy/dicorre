@@ -4,7 +4,7 @@ import { Effect } from 'effect'
 import { loadNodePlugins } from '@dicorre/plugins/node'
 import { Anonymizer } from '@dicorre/shared/services/anonymizer'
 import { ConfigService } from '@dicorre/shared/services/config'
-import type { AppConfig } from '@dicorre/shared/services/config/schema'
+import type { AppConfig, DicomServerConfig } from '@dicorre/shared/services/config/schema'
 import { DicomProcessor } from '@dicorre/shared/services/dicomProcessor'
 import { DicomSender } from '@dicorre/shared/services/dicomSender'
 import { DownloadService } from '@dicorre/shared/services/downloadService'
@@ -60,6 +60,16 @@ export interface SendSummary {
 export interface VerifySummary {
   readonly studies: number
   readonly verification: ReceiptVerificationRecord[]
+}
+
+export interface ServerProbeSummary {
+  readonly url: string
+  readonly method: 'GET'
+  readonly ok: boolean
+  readonly reachable: boolean
+  readonly status?: number
+  readonly statusText?: string
+  readonly message?: string
 }
 
 export interface ConfigSummary {
@@ -173,6 +183,35 @@ const buildReceiptVerifierSettings = (appConfig: any): ReceiptVerificationSettin
     timeoutMs: Number.isFinite(Number(pluginSettings.timeoutMs)) ? Number(pluginSettings.timeoutMs) : undefined,
     requireInstanceCountMatch: pluginSettings.requireInstanceCountMatch === true,
   }
+}
+
+const redactUrl = (value: string): string => {
+  try {
+    const url = new URL(value)
+    if (url.username) url.username = '<redacted>'
+    if (url.password) url.password = '<redacted>'
+    return url.toString()
+  } catch {
+    return value
+  }
+}
+
+const buildDicomServerHeaders = (serverConfig: DicomServerConfig): Record<string, string> => {
+  const headers: Record<string, string> = {
+    Accept: 'application/dicom+json',
+    ...serverConfig.headers,
+  }
+
+  if (serverConfig.auth?.type === 'basic') headers.Authorization = `Basic ${serverConfig.auth.credentials}`
+  if (serverConfig.auth?.type === 'bearer') headers.Authorization = `Bearer ${serverConfig.auth.credentials}`
+
+  return headers
+}
+
+const serverProbeUrl = (serverConfig: DicomServerConfig): string => {
+  const path = serverConfig.testConnectionPath || '/studies'
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return `${serverConfig.url}${normalizedPath}`
 }
 
 const withNextCommand = (
@@ -437,6 +476,49 @@ export const send = async (
       .filter((record): record is ReceiptVerificationRecord => !!record)
       .map((record) => withNextCommand(record, paths.workspace, options.config))
     return { studies: selected.length, succeeded, failed, skipped, verification }
+  })
+
+  return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
+}
+
+export const serverProbe = async (
+  options: {
+    readonly workspace?: string
+    readonly config?: string
+  } = {},
+): Promise<ServerProbeSummary> => {
+  const paths = resolveCliPaths(options.workspace)
+  const effect = Effect.gen(function* () {
+    yield* loadConfigIfProvided(options.config)
+    const configService = yield* ConfigService
+    const serverConfig = yield* configService.getServerConfig
+    const url = serverProbeUrl(serverConfig)
+
+    return yield* Effect.promise(async () => {
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: buildDicomServerHeaders(serverConfig),
+        })
+        await response.text().catch(() => '')
+        return {
+          url: redactUrl(url),
+          method: 'GET' as const,
+          ok: response.ok,
+          reachable: true,
+          status: response.status,
+          statusText: response.statusText,
+        }
+      } catch (error) {
+        return {
+          url: redactUrl(url),
+          method: 'GET' as const,
+          ok: false,
+          reachable: false,
+          message: error instanceof Error ? error.message : String(error),
+        }
+      }
+    })
   })
 
   return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))

@@ -89,6 +89,7 @@ Common options:
 - `--config <config.json>`: load a config for that command run.
 - `--concurrency <number>`: maximum concurrent file operations where supported.
 - `--study <all|uid[,uid]>`: select studies for commands that operate on studies. It defaults to `all`.
+- `--socks-proxy <socks5://host:port>`: route CLI network requests through a SOCKS proxy. `DICORRE_SOCKS_PROXY` can be used instead.
 
 ## Typical Workflow
 
@@ -99,6 +100,14 @@ dicorre studies --workspace .dicorre/case-001
 dicorre anonymize --study all --workspace .dicorre/case-001 --config project.config.json
 dicorre download --study all --workspace .dicorre/case-001 --out anonymized.zip
 dicorre send --study all --workspace .dicorre/case-001 --config project.config.json
+```
+
+For a whitelisted SSH host, start a local SOCKS tunnel and run a probe before sending:
+
+```bash
+ssh -fN -D 127.0.0.1:1080 -o ExitOnForwardFailure=yes <user>@<ssh-host>
+dicorre server-probe --config project.config.json --socks-proxy socks5://127.0.0.1:1080
+dicorre send --study all --workspace .dicorre/case-001 --config project.config.json --socks-proxy socks5://127.0.0.1:1080
 ```
 
 ## Commands
@@ -235,12 +244,14 @@ If multiple packages are produced, numbered suffixes are added to the requested 
 Send selected studies to the configured DICOMweb STOW-RS endpoint.
 
 ```bash
-dicorre send [--study <all|uid[,uid]>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--concurrency <number>]
+dicorre send [--study <all|uid[,uid]>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--concurrency <number>] [--socks-proxy <url>]
 ```
 
 The DICOMweb endpoint comes from the active config's `dicomServer.url`.
 
 Enabled send-hook plugins run around each selected study. The CLI supports the same send hook points as the web app: `beforeSend`, `afterSend`, and `onSendError`.
+
+Use `--socks-proxy socks5://127.0.0.1:1080` or `DICORRE_SOCKS_PROXY=socks5://127.0.0.1:1080` to send through an SSH dynamic forward.
 
 Output:
 
@@ -263,12 +274,28 @@ Output:
 
 When `receipt-verifier` is enabled, DICOM send success remains the command success condition. Verification failures, timeouts, or pending states are returned in the `verification` block and do not make a successful send exit as failed.
 
+### `server-probe`
+
+Check the configured DICOMweb endpoint without sending files.
+
+```bash
+dicorre server-probe [--workspace <dir>] [--config <config.json>] [--socks-proxy <url>]
+```
+
+The command performs a GET against `dicomServer.url + testConnectionPath`, defaulting to `/studies`, and returns JSON with `ok`, `reachable`, and HTTP status fields.
+
+Example:
+
+```bash
+dicorre server-probe --config orthanc.config.json --socks-proxy socks5://127.0.0.1:1080
+```
+
 ### `verify`
 
 Re-check selected studies against the configured receipt backend without resending files.
 
 ```bash
-dicorre verify [--study <all|uid[,uid]>] [--wait] [--timeout <duration>] [--workspace <dir>] [--state <file>] [--config <config.json>]
+dicorre verify [--study <all|uid[,uid]>] [--wait] [--timeout <duration>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--socks-proxy <url>]
 ```
 
 Use `--wait` to poll until the study is found or the timeout is reached. Durations accept milliseconds, `s`, or `m`, for example `60000`, `60s`, or `15m`.

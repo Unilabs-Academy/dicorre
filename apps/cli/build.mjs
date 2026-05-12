@@ -21,6 +21,7 @@ await build({
     'node-unrar-js',
     'pdfjs-dist',
     'sharp',
+    'undici',
   ],
 })
 

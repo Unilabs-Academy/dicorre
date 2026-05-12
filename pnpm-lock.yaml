@@ -44,6 +44,9 @@ importers:
       sharp:
         specifier: ^0.34.4
         version: 0.34.5
+      undici:
+        specifier: ^7.25.0
+        version: 7.25.0
     devDependencies:
       '@tsconfig/node22':
         specifier: ^22.0.2
@@ -3739,6 +3742,10 @@ packages:
     resolution: {integrity: sha512-GrKEsc3ughskmGA9jevVlIOPMiiAHJ4OFUtaAH+NhfTUSiZ1wMPIQqQvAJUrJspFXJt3EBWgpAeoHEDVT1IBug==}
     engines: {node: '>=20.18.1'}
 
+  undici@7.25.0:
+    resolution: {integrity: sha512-xXnp4kTyor2Zq+J1FfPI6Eq3ew5h6Vl0F/8d9XU5zZQf1tX9s2Su1/3PiMmUANFULpmksxkClamIZcaUqryHsQ==}
+    engines: {node: '>=20.18.1'}
+
   unicorn-magic@0.3.0:
     resolution: {integrity: sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA==}
     engines: {node: '>=18'}
@@ -7274,6 +7281,8 @@ snapshots:
   undici-types@6.21.0: {}
 
   undici@7.12.0: {}
+
+  undici@7.25.0: {}
 
   unicorn-magic@0.3.0: {}
 

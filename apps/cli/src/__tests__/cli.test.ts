@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -68,6 +69,87 @@ const makeDicomWebServer = async () => {
       return qidoSearches
     },
     close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve())
+    }),
+  }
+}
+
+const makeSocksProxy = async () => {
+  let connects = 0
+  const sockets = new Set<net.Socket>()
+  const server = net.createServer((socket) => {
+    sockets.add(socket)
+    let buffer = Buffer.alloc(0)
+    let stage: 'greeting' | 'connect' | 'proxy' = 'greeting'
+
+    socket.on('close', () => sockets.delete(socket))
+    socket.on('data', (chunk) => {
+      if (stage === 'proxy') return
+      buffer = Buffer.concat([buffer, chunk])
+
+      if (stage === 'greeting') {
+        if (buffer.length < 2) return
+        const methodCount = buffer[1] ?? 0
+        const greetingLength = 2 + methodCount
+        if (buffer.length < greetingLength) return
+        socket.write(Buffer.from([0x05, 0x00]))
+        buffer = buffer.subarray(greetingLength)
+        stage = 'connect'
+      }
+
+      if (stage === 'connect') {
+        if (buffer.length < 5) return
+        const atyp = buffer[3]
+        let offset = 4
+        let host = ''
+        if (atyp === 0x01) {
+          if (buffer.length < offset + 4 + 2) return
+          host = Array.from(buffer.subarray(offset, offset + 4)).join('.')
+          offset += 4
+        } else if (atyp === 0x03) {
+          const length = buffer[offset]
+          if (length === undefined || buffer.length < offset + 1 + length + 2) return
+          offset += 1
+          host = buffer.subarray(offset, offset + length).toString('utf8')
+          offset += length
+        } else if (atyp === 0x04) {
+          if (buffer.length < offset + 16 + 2) return
+          host = buffer.subarray(offset, offset + 16).toString('hex').match(/.{1,4}/gu)?.join(':') ?? ''
+          offset += 16
+        } else {
+          socket.destroy()
+          return
+        }
+
+        const port = buffer.readUInt16BE(offset)
+        const remainder = buffer.subarray(offset + 2)
+        connects++
+        stage = 'proxy'
+
+        const upstream = net.connect(port, host, () => {
+          sockets.add(upstream)
+          socket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]))
+          if (remainder.length > 0) upstream.write(remainder)
+          socket.pipe(upstream)
+          upstream.pipe(socket)
+        })
+        upstream.on('close', () => sockets.delete(upstream))
+        upstream.on('error', () => socket.destroy())
+        socket.on('error', () => upstream.destroy())
+      }
+    })
+  })
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('Failed to bind SOCKS proxy')
+  return {
+    url: `socks5://127.0.0.1:${address.port}`,
+    get connects() {
+      return connects
+    },
+    close: () => new Promise<void>((resolve, reject) => {
+      for (const socket of sockets) socket.destroy()
       server.close((error) => error ? reject(error) : resolve())
     }),
   }
@@ -201,6 +283,91 @@ describe('dicorre CLI', () => {
     const state = JSON.parse(await readFile(path.join(workspace, 'state.json'), 'utf8'))
     expect(state.files[0].anonymized).toBe(true)
     expect(state.studies[0].patientId).not.toBe('PAT001')
+  })
+
+  it('probes and sends DICOM files through a SOCKS proxy', async () => {
+    const workspace = await makeWorkspace()
+
+    const ingest = await runCli([
+      'ingest',
+      fixture('IM-0001-0001.dcm'),
+      '--workspace',
+      workspace,
+    ]) as { filesParsed: number; studies: number }
+
+    expect(ingest).toMatchObject({ filesParsed: 1, studies: 1 })
+
+    const anonymized = await runCli([
+      'anonymize',
+      '--workspace',
+      workspace,
+      '--study',
+      'all',
+    ]) as { files: number; studies: number }
+
+    expect(anonymized).toMatchObject({ files: 1, studies: 1 })
+
+    const server = await makeDicomWebServer()
+    const proxy = await makeSocksProxy()
+    const configPath = path.join(workspace, 'config-for-socks-send.json')
+    const config = JSON.parse(await readFile(path.join(repoRoot, 'packages', 'shared', 'app.config.json'), 'utf8'))
+    config.dicomServer = {
+      ...config.dicomServer,
+      url: server.url,
+      timeout: 5000,
+    }
+    config.plugins.settings['sent-notifier'].url = server.sentUrl
+    config.plugins.settings['sent-notifier'].authHeaderValue = 'test-key'
+    config.plugins.enabled = [...new Set([...config.plugins.enabled, 'receipt-verifier'])]
+    config.plugins.settings['receipt-verifier'] = {
+      provider: 'dicomweb-qido',
+      url: server.url,
+      pollIntervalMs: 1,
+      timeoutMs: 1,
+      requireInstanceCountMatch: true,
+    }
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
+
+    try {
+      const probe = await runCli([
+        'server-probe',
+        '--config',
+        configPath,
+        '--workspace',
+        workspace,
+        '--socks-proxy',
+        proxy.url,
+      ]) as { ok: boolean; reachable: boolean; status: number }
+
+      expect(probe).toMatchObject({ ok: true, reachable: true, status: 200 })
+
+      const send = await runCli([
+        'send',
+        '--workspace',
+        workspace,
+        '--study',
+        'all',
+        '--config',
+        configPath,
+        '--socks-proxy',
+        proxy.url,
+      ]) as {
+        succeeded: number
+        failed: number
+        skipped: number
+        verification?: Array<{ state: string }>
+      }
+
+      expect(send).toMatchObject({ succeeded: 1, failed: 0, skipped: 0 })
+      expect(send.verification?.[0]).toMatchObject({ state: 'verified' })
+      expect(server.posts).toBe(1)
+      expect(server.notifications).toBe(1)
+      expect(server.qidoSearches).toBe(2)
+      expect(proxy.connects).toBeGreaterThan(0)
+    } finally {
+      await proxy.close()
+      await server.close()
+    }
   })
 
   it('filters mixed SIP ZIP archives before listing grouped studies', async () => {

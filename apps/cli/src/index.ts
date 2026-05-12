@@ -11,6 +11,7 @@ import {
   ingest,
   listStudies,
   listPlugins,
+  serverProbe,
   loadConfig,
   send,
   setCustomField,
@@ -19,6 +20,7 @@ import {
   validateConfig,
   verify,
 } from './commands'
+import { ENV_SOCKS_PROXY, withCliSocksProxy } from './proxy'
 
 if (!globalThis.crypto) {
   Object.defineProperty(globalThis, 'crypto', { value: webcrypto })
@@ -47,6 +49,11 @@ const GLOBAL_OPTIONS = [
 
 const CONFIG_OPTION = { name: '--config', value: '<config.json>', description: 'Load this config for the command run.' } as const
 const CONCURRENCY_OPTION = { name: '--concurrency', value: '<number>', description: 'Maximum concurrent file operations.', default: '3' } as const
+const SOCKS_PROXY_OPTION = {
+  name: '--socks-proxy',
+  value: '<socks5://host:port>',
+  description: `Route CLI network requests through a SOCKS proxy. Defaults to ${ENV_SOCKS_PROXY}.`,
+} as const
 const WAIT_OPTION = { name: '--wait', description: 'Poll until verification succeeds or timeout is reached.' } as const
 const TIMEOUT_OPTION = { name: '--timeout', value: '<duration>', description: 'Verification timeout, for example 60000, 60s, or 15m.' } as const
 const STUDY_OPTION = {
@@ -134,19 +141,34 @@ const COMMANDS: CommandHelp[] = [
   {
     name: 'send',
     summary: 'Send selected studies to the configured DICOMweb STOW-RS endpoint.',
-    usage: 'dicorre send [--study <all|uid[,uid]>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--concurrency <number>]',
-    options: [STUDY_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION, CONCURRENCY_OPTION],
-    examples: ['dicorre send --study all --config orthanc.config.json --workspace .dicorre/case-001'],
+    usage: 'dicorre send [--study <all|uid[,uid]>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--concurrency <number>] [--socks-proxy <url>]',
+    options: [STUDY_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION, CONCURRENCY_OPTION, SOCKS_PROXY_OPTION],
+    examples: [
+      'dicorre send --study all --config orthanc.config.json --workspace .dicorre/case-001',
+      'dicorre send --study all --config orthanc.config.json --socks-proxy socks5://127.0.0.1:1080',
+    ],
     output: 'JSON summary with studies, succeeded, failed, skipped, and receipt verification records when available.',
+  },
+  {
+    name: 'server-probe',
+    summary: 'Check the configured DICOMweb endpoint without sending DICOM files.',
+    usage: 'dicorre server-probe [--workspace <dir>] [--config <config.json>] [--socks-proxy <url>]',
+    options: [GLOBAL_OPTIONS[0], CONFIG_OPTION, SOCKS_PROXY_OPTION],
+    examples: [
+      'dicorre server-probe --config orthanc.config.json',
+      'dicorre server-probe --config orthanc.config.json --socks-proxy socks5://127.0.0.1:1080',
+    ],
+    output: 'JSON summary with URL, HTTP status, and ok/reachable fields.',
   },
   {
     name: 'verify',
     summary: 'Verify selected sent studies are visible in the configured receipt backend without resending.',
-    usage: 'dicorre verify [--study <all|uid[,uid]>] [--wait] [--timeout <duration>] [--workspace <dir>] [--state <file>] [--config <config.json>]',
-    options: [STUDY_OPTION, WAIT_OPTION, TIMEOUT_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION],
+    usage: 'dicorre verify [--study <all|uid[,uid]>] [--wait] [--timeout <duration>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--socks-proxy <url>]',
+    options: [STUDY_OPTION, WAIT_OPTION, TIMEOUT_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION, SOCKS_PROXY_OPTION],
     examples: [
       'dicorre verify --study all --workspace .dicorre/case-001',
       'dicorre verify --study 1.2.840.example --wait --timeout 15m --config project.config.json',
+      'dicorre verify --study all --config project.config.json --socks-proxy socks5://127.0.0.1:1080',
     ],
     output: 'JSON summary with per-study receipt verification records.',
   },
@@ -308,63 +330,68 @@ export const runCli = async (argv: string[]): Promise<unknown> => {
   const state = asString(parsed.options.state)
   const config = asString(parsed.options.config)
   const concurrency = asNumber(parsed.options.concurrency)
+  const socksProxy = asString(parsed.options['socks-proxy'])
 
-  switch (parsed.command) {
-    case 'ingest':
-      if (parsed.positionals.length === 0) throw new Error('ingest requires at least one input path')
-      return ingest(parsed.positionals, {
-        workspace,
-        state,
-        config,
-        converted: parsed.options.converted !== false,
-        parseConcurrency: concurrency,
-      })
-    case 'studies':
-      return listStudies({ workspace, state })
-    case 'plugins':
-      return listPlugins({ workspace, config })
-    case 'anonymize':
-      return anonymize(asStudies(parsed.options.study), { workspace, state, config, concurrency })
-    case 'download':
-      return download(asStudies(parsed.options.study), { workspace, state, out: asString(parsed.options.out) })
-    case 'send':
-      return send(asStudies(parsed.options.study), { workspace, state, config, concurrency })
-    case 'verify':
-      return verify(asStudies(parsed.options.study), {
-        workspace,
-        state,
-        config,
-        wait: parsed.options.wait === true,
-        timeout: asString(parsed.options.timeout),
-      })
-    case 'config-validate':
-      if (!parsed.positionals[0]) throw new Error('config-validate requires a config path')
-      return validateConfig(parsed.positionals[0], { workspace })
-    case 'config-load':
-      if (!parsed.positionals[0]) throw new Error('config-load requires a config path')
-      return loadConfig(parsed.positionals[0], { workspace })
-    case 'config-show':
-      return showConfig({ workspace })
-    case 'project-create':
-      if (!parsed.positionals[0]) throw new Error('project-create requires a project name')
-      return createProject(parsed.positionals[0], { workspace })
-    case 'project-clear':
-      return clearProject({ workspace })
-    case 'field-set':
-      if (!parsed.positionals[0] || !parsed.positionals[1] || !parsed.positionals[2]) {
-        throw new Error('field-set requires a study id, field, and value')
-      }
-      return setCustomField(parsed.positionals[0], parsed.positionals[1], parsed.positionals[2], { workspace, state })
-    case 'field-clear':
-      if (!parsed.positionals[0] || !parsed.positionals[1]) {
-        throw new Error('field-clear requires a study id and field')
-      }
-      return clearCustomField(parsed.positionals[0], parsed.positionals[1], { workspace, state })
-    case 'study-merge':
-      return mergeStudies(parsed.positionals, { workspace, state })
-    default:
-      return help()
-  }
+  return withCliSocksProxy(socksProxy, async () => {
+    switch (parsed.command) {
+      case 'ingest':
+        if (parsed.positionals.length === 0) throw new Error('ingest requires at least one input path')
+        return ingest(parsed.positionals, {
+          workspace,
+          state,
+          config,
+          converted: parsed.options.converted !== false,
+          parseConcurrency: concurrency,
+        })
+      case 'studies':
+        return listStudies({ workspace, state })
+      case 'plugins':
+        return listPlugins({ workspace, config })
+      case 'anonymize':
+        return anonymize(asStudies(parsed.options.study), { workspace, state, config, concurrency })
+      case 'download':
+        return download(asStudies(parsed.options.study), { workspace, state, out: asString(parsed.options.out) })
+      case 'send':
+        return send(asStudies(parsed.options.study), { workspace, state, config, concurrency })
+      case 'server-probe':
+        return serverProbe({ workspace, config })
+      case 'verify':
+        return verify(asStudies(parsed.options.study), {
+          workspace,
+          state,
+          config,
+          wait: parsed.options.wait === true,
+          timeout: asString(parsed.options.timeout),
+        })
+      case 'config-validate':
+        if (!parsed.positionals[0]) throw new Error('config-validate requires a config path')
+        return validateConfig(parsed.positionals[0], { workspace })
+      case 'config-load':
+        if (!parsed.positionals[0]) throw new Error('config-load requires a config path')
+        return loadConfig(parsed.positionals[0], { workspace })
+      case 'config-show':
+        return showConfig({ workspace })
+      case 'project-create':
+        if (!parsed.positionals[0]) throw new Error('project-create requires a project name')
+        return createProject(parsed.positionals[0], { workspace })
+      case 'project-clear':
+        return clearProject({ workspace })
+      case 'field-set':
+        if (!parsed.positionals[0] || !parsed.positionals[1] || !parsed.positionals[2]) {
+          throw new Error('field-set requires a study id, field, and value')
+        }
+        return setCustomField(parsed.positionals[0], parsed.positionals[1], parsed.positionals[2], { workspace, state })
+      case 'field-clear':
+        if (!parsed.positionals[0] || !parsed.positionals[1]) {
+          throw new Error('field-clear requires a study id and field')
+        }
+        return clearCustomField(parsed.positionals[0], parsed.positionals[1], { workspace, state })
+      case 'study-merge':
+        return mergeStudies(parsed.positionals, { workspace, state })
+      default:
+        return help()
+    }
+  })
 }
 
 const isCliEntrypoint = (): boolean => {

@@ -43,4 +43,6 @@ dicorre ingest ./case.zip --workspace .dicorre/case-001 --config project.config.
 dicorre studies --workspace .dicorre/case-001
 dicorre anonymize --study all --workspace .dicorre/case-001 --config project.config.json
 dicorre download --study all --workspace .dicorre/case-001 --out anonymized.zip
+dicorre server-probe --config project.config.json --socks-proxy socks5://127.0.0.1:1080
+dicorre send --study all --workspace .dicorre/case-001 --config project.config.json --socks-proxy socks5://127.0.0.1:1080
 ```

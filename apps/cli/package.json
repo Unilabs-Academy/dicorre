@@ -36,7 +36,8 @@
     "jszip": "^3.10.1",
     "node-unrar-js": "^2.0.2",
     "pdfjs-dist": "^5.4.54",
-    "sharp": "^0.34.4"
+    "sharp": "^0.34.4",
+    "undici": "^7.25.0"
   },
   "devDependencies": {
     "@tsconfig/node22": "^22.0.2",
