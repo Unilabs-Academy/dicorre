@@ -608,9 +608,14 @@ export const DicomSenderLive = Layer.succeed(
 	          try { options?.onSplitFallback?.(fallback) } catch { }
 	        }
 
-	        const shouldAttemptSplitFallback = (source: DicomFile, failureKind: SendFailureKind): boolean =>
-	          source.fileSize >= EXTREME_DICOM_FILE_WARNING_BYTES &&
-	          (failureKind === 'timeout' || failureKind === 'network')
+	        const shouldAttemptSplitFallback = (
+	          source: DicomFile,
+	          failureKind: SendFailureKind,
+	          httpStatus?: number
+	        ): boolean =>
+	          httpStatus === 413 ||
+	          (source.fileSize >= EXTREME_DICOM_FILE_WARNING_BYTES &&
+	            (failureKind === 'timeout' || failureKind === 'network'))
 
 	        const sendSplitFallback = (
 	          source: DicomFile,
@@ -833,7 +838,7 @@ export const DicomSenderLive = Layer.succeed(
                 continue
               }
 
-	              if (shouldAttemptSplitFallback(toSend, failureKind)) {
+	              if (shouldAttemptSplitFallback(toSend, failureKind, failure.httpStatus)) {
 	                const splitFallbackSuccess = yield* sendSplitFallback(toSend, attempts)
 	                if (splitFallbackSuccess) {
 	                  succeeded.push(splitFallbackSuccess)

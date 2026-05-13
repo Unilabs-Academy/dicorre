@@ -13,6 +13,7 @@ import type { DicomFile } from '@dicorre/shared/types/dicom'
 
 const originalFetch = globalThis.fetch
 const MULTIFRAME_TRUE_COLOR_SC_UID = '1.2.840.10008.5.1.4.1.1.7.4'
+const ENHANCED_MR_IMAGE_STORAGE_UID = '1.2.840.10008.5.1.4.1.1.4.1'
 const IMPLICIT_VR_LITTLE_ENDIAN_UID = '1.2.840.10008.1.2'
 
 const createDicomFile = (overrides: Partial<DicomFile> = {}): DicomFile => ({
@@ -66,6 +67,42 @@ const createSupportedMultiframeBuffer = (): ArrayBuffer => {
     '00280102': { vr: 'US', Value: [7] },
     '00280103': { vr: 'US', Value: [0] },
     '7FE00010': { vr: 'OB', Value: [new Uint8Array(48)] }
+  }
+  const dicomDict = new (dcmjs.data as any).DicomDict(meta)
+  dicomDict.dict = dict
+  return dicomDict.write() as ArrayBuffer
+}
+
+const createSupportedEnhancedMrMultiframeBuffer = (): ArrayBuffer => {
+  const uid = () => (dcmjs.data as any).DicomMetaDictionary.uid()
+  const sopInstanceUID = uid()
+  const meta = {
+    '00020001': { vr: 'OB', Value: [new Uint8Array([0, 1])] },
+    '00020002': { vr: 'UI', Value: [ENHANCED_MR_IMAGE_STORAGE_UID] },
+    '00020003': { vr: 'UI', Value: [sopInstanceUID] },
+    '00020010': { vr: 'UI', Value: [IMPLICIT_VR_LITTLE_ENDIAN_UID] },
+    '00020012': { vr: 'UI', Value: [uid()] },
+    '00020013': { vr: 'SH', Value: ['RATATOSKR'] }
+  }
+  const dict = {
+    '00080016': { vr: 'UI', Value: [ENHANCED_MR_IMAGE_STORAGE_UID] },
+    '00080018': { vr: 'UI', Value: [sopInstanceUID] },
+    '00080060': { vr: 'CS', Value: ['MR'] },
+    '00100010': { vr: 'PN', Value: ['REMOVED'] },
+    '00100020': { vr: 'LO', Value: ['PATIENT'] },
+    '0020000D': { vr: 'UI', Value: [uid()] },
+    '0020000E': { vr: 'UI', Value: [uid()] },
+    '00200013': { vr: 'IS', Value: ['1'] },
+    '00280002': { vr: 'US', Value: [1] },
+    '00280004': { vr: 'CS', Value: ['MONOCHROME2'] },
+    '00280008': { vr: 'IS', Value: ['2'] },
+    '00280010': { vr: 'US', Value: [2] },
+    '00280011': { vr: 'US', Value: [2] },
+    '00280100': { vr: 'US', Value: [16] },
+    '00280101': { vr: 'US', Value: [12] },
+    '00280102': { vr: 'US', Value: [11] },
+    '00280103': { vr: 'US', Value: [0] },
+    '7FE00010': { vr: 'OW', Value: [new Uint8Array(16)] }
   }
   const dicomDict = new (dcmjs.data as any).DicomDict(meta)
   dicomDict.dict = dict
@@ -288,6 +325,51 @@ describe('DicomSender Service', () => {
     const result = await promise
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(5)
+    expect(result.succeededCount).toBe(1)
+    expect(result.failedCount).toBe(0)
+    expect(fallbackSpy).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'started',
+      frameCount: 2
+    }))
+    expect(fallbackSpy).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'succeeded',
+      frameCount: 2
+    }))
+  })
+
+  it('falls back to split derived frames after a 413 response for enhanced MR multi-frame files', async () => {
+    const arrayBuffer = createSupportedEnhancedMrMultiframeBuffer()
+    const file = createDicomFile({
+      id: 'large-enhanced-mr',
+      fileName: 'large-enhanced-mr.dcm',
+      fileSize: 340 * 1024 * 1024,
+      arrayBuffer,
+      metadata: {
+        sopInstanceUID: '1.2.3.large-enhanced-mr',
+        transferSyntaxUID: IMPLICIT_VR_LITTLE_ENDIAN_UID
+      }
+    })
+    const fallbackSpy = vi.fn()
+
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('too large', { status: 413, statusText: 'Request Entity Too Large' }))
+      .mockImplementation(() => Promise.resolve(new Response('', { status: 200 }))) as typeof fetch
+
+    const result = await runSendFiles(
+      Effect.gen(function* () {
+        const sender = yield* DicomSender
+        return yield* sender.sendFiles([file], {
+          url: 'http://localhost:8042',
+          timeout: 100,
+          description: 'Test Server'
+        }, 1, {
+          onSplitFallback: fallbackSpy
+        })
+      }),
+      [file]
+    )
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3)
     expect(result.succeededCount).toBe(1)
     expect(result.failedCount).toBe(0)
     expect(fallbackSpy).toHaveBeenCalledWith(expect.objectContaining({

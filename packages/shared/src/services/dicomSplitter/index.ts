@@ -3,12 +3,17 @@ import * as dcmjs from 'dcmjs'
 import type { DicomFile } from '@dicorre/shared/types/dicom'
 
 const MULTIFRAME_TRUE_COLOR_SC_UID = '1.2.840.10008.5.1.4.1.1.7.4'
+const ENHANCED_MR_IMAGE_STORAGE_UID = '1.2.840.10008.5.1.4.1.1.4.1'
 const SECONDARY_CAPTURE_IMAGE_STORAGE_UID = '1.2.840.10008.5.1.4.1.1.7'
 const IMPLICIT_VR_LITTLE_ENDIAN_UID = '1.2.840.10008.1.2'
 const EXPLICIT_VR_LITTLE_ENDIAN_UID = '1.2.840.10008.1.2.1'
 const SUPPORTED_TRANSFER_SYNTAXES = new Set([
   IMPLICIT_VR_LITTLE_ENDIAN_UID,
   EXPLICIT_VR_LITTLE_ENDIAN_UID
+])
+const SUPPORTED_SPLIT_SOURCE_SOP_CLASSES = new Set([
+  MULTIFRAME_TRUE_COLOR_SC_UID,
+  ENHANCED_MR_IMAGE_STORAGE_UID
 ])
 
 const TAGS = {
@@ -71,6 +76,7 @@ export type SplitDecision =
       readonly rows: number
       readonly columns: number
       readonly bytesPerFrame: number
+      readonly pixelDataVR: 'OB' | 'OW'
     }
   | {
       readonly canSplit: false
@@ -276,7 +282,7 @@ const parseSplitContext = (file: DicomFile): ParsedSplitContext | SplitDecision 
     file.metadata?.transferSyntaxUID ||
     IMPLICIT_VR_LITTLE_ENDIAN_UID
 
-  if (sourceSOPClassUID !== MULTIFRAME_TRUE_COLOR_SC_UID) {
+  if (!SUPPORTED_SPLIT_SOURCE_SOP_CLASSES.has(sourceSOPClassUID)) {
     return {
       canSplit: false,
       reason: 'not-multiframe-true-color-secondary-capture',
@@ -311,21 +317,30 @@ const parseSplitContext = (file: DicomFile): ParsedSplitContext | SplitDecision 
   const highBit = getNumberValue(dict, TAGS.highBit)
   const pixelRepresentation = getNumberValue(dict, TAGS.pixelRepresentation)
 
-  if (
-    rows <= 0 ||
-    columns <= 0 ||
-    samplesPerPixel !== 3 ||
-    photometricInterpretation !== 'RGB' ||
-    planarConfiguration !== 0 ||
-    bitsAllocated !== 8 ||
-    bitsStored !== 8 ||
-    highBit !== 7 ||
-    pixelRepresentation !== 0
-  ) {
+  const isInterleavedRgb8 =
+    samplesPerPixel === 3 &&
+    photometricInterpretation === 'RGB' &&
+    planarConfiguration === 0 &&
+    bitsAllocated === 8 &&
+    bitsStored === 8 &&
+    highBit === 7 &&
+    pixelRepresentation === 0
+  const isMonochrome =
+    samplesPerPixel === 1 &&
+    (photometricInterpretation === 'MONOCHROME1' || photometricInterpretation === 'MONOCHROME2') &&
+    bitsAllocated % 8 === 0 &&
+    bitsAllocated >= 8 &&
+    bitsAllocated <= 16 &&
+    bitsStored > 0 &&
+    bitsStored <= bitsAllocated &&
+    highBit >= bitsStored - 1 &&
+    (pixelRepresentation === 0 || pixelRepresentation === 1)
+
+  if (rows <= 0 || columns <= 0 || (!isInterleavedRgb8 && !isMonochrome)) {
     return {
       canSplit: false,
       reason: 'unsupported-pixel-layout',
-      message: 'Only uncompressed interleaved 8-bit RGB multi-frame images are supported for splitting'
+      message: 'Only uncompressed interleaved 8-bit RGB or 8/16-bit monochrome multi-frame images are supported for splitting'
     }
   }
 
@@ -339,7 +354,7 @@ const parseSplitContext = (file: DicomFile): ParsedSplitContext | SplitDecision 
   }
 
   const pixelData = toArrayBuffer(pixelDataValue)
-  const bytesPerFrame = rows * columns * samplesPerPixel
+  const bytesPerFrame = rows * columns * samplesPerPixel * (bitsAllocated / 8)
   if (pixelData.byteLength < bytesPerFrame * frameCount) {
     return {
       canSplit: false,
@@ -364,7 +379,8 @@ const parseSplitContext = (file: DicomFile): ParsedSplitContext | SplitDecision 
       frameCount,
       rows,
       columns,
-      bytesPerFrame
+      bytesPerFrame,
+      pixelDataVR: bitsAllocated > 8 ? 'OW' : (dict[TAGS.pixelData]?.vr === 'OW' ? 'OW' : 'OB')
     }
   }
 }
@@ -467,7 +483,7 @@ const createFrameFile = (
       [TAGS.referencedSOPInstanceUID]: { vr: 'UI', Value: [context.sourceSOPInstanceUID] }
     }]
   }
-  frameDict[TAGS.pixelData] = { vr: 'OB', Value: [pixelFrame] }
+  frameDict[TAGS.pixelData] = { vr: context.decision.pixelDataVR, Value: [pixelFrame] }
   applyFrameOverlays(context.dict, frameDict, frameNumber)
 
   const meta = cloneValue(context.dicomData.meta ?? {})
