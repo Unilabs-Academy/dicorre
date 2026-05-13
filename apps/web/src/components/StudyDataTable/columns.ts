@@ -8,6 +8,7 @@ import { ArrowUp, ArrowDown, Edit, FileSearch, FileText } from 'lucide-vue-next'
 import StudyProgressIndicator from '@/components/StudyProgressIndicator.vue'
 import ReceiptVerificationIndicator from '@/components/ReceiptVerificationIndicator.vue'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { formatStudyUidDisplay } from './uidDisplay'
 
 export const columns: ColumnDef<DicomStudy>[] = [
   {
@@ -233,10 +234,10 @@ export const columns: ColumnDef<DicomStudy>[] = [
     cell: ({ row }) => {
       const uid = row.getValue('studyInstanceUID') as string
       return h('div', {
-        class: 'font-mono text-xs text-muted-foreground max-w-[150px] truncate',
+        class: 'font-mono text-xs text-muted-foreground whitespace-nowrap',
         'data-testid': 'cell-study-uid',
         title: uid
-      }, uid)
+      }, formatStudyUidDisplay(uid))
     },
   },
   {
