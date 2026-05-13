@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { webcrypto } from 'node:crypto'
-import { realpathSync } from 'node:fs'
+import { appendFileSync, mkdirSync, realpathSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   anonymize,
@@ -20,7 +22,7 @@ import {
   validateConfig,
   verify,
 } from './commands'
-import { ENV_SOCKS_PROXY, withCliSocksProxy } from './proxy'
+import { ENV_CA_CERT, ENV_SOCKS_PROXY, withCliNetwork } from './proxy'
 
 if (!globalThis.crypto) {
   Object.defineProperty(globalThis, 'crypto', { value: webcrypto })
@@ -54,6 +56,14 @@ const SOCKS_PROXY_OPTION = {
   value: '<socks5://host:port>',
   description: `Route CLI network requests through a SOCKS proxy. Defaults to ${ENV_SOCKS_PROXY}.`,
 } as const
+const CA_CERT_OPTION = {
+  name: '--ca-cert',
+  value: '<ca.pem>',
+  description: `Trust this PEM CA/intermediate bundle for HTTPS requests. Defaults to ${ENV_CA_CERT}.`,
+} as const
+const QUIET_OPTION = { name: '--quiet', description: 'Suppress operational logs. Final JSON is still returned.' } as const
+const LOG_FILE_OPTION = { name: '--log-file', value: '<path>', description: 'Write operational logs to this file instead of stderr.' } as const
+const RESULT_JSON_OPTION = { name: '--result-json', value: '<path>', description: 'Write the final structured result JSON to this path.' } as const
 const WAIT_OPTION = { name: '--wait', description: 'Poll until verification succeeds or timeout is reached.' } as const
 const TIMEOUT_OPTION = { name: '--timeout', value: '<duration>', description: 'Verification timeout, for example 60000, 60s, or 15m.' } as const
 const STUDY_OPTION = {
@@ -141,30 +151,30 @@ const COMMANDS: CommandHelp[] = [
   {
     name: 'send',
     summary: 'Send selected studies to the configured DICOMweb STOW-RS endpoint.',
-    usage: 'dicorre send [--study <all|uid[,uid]>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--concurrency <number>] [--socks-proxy <url>]',
-    options: [STUDY_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION, CONCURRENCY_OPTION, SOCKS_PROXY_OPTION],
+    usage: 'dicorre send [--study <all|uid[,uid]>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--concurrency <number>] [--socks-proxy <url>] [--ca-cert <ca.pem>] [--quiet] [--log-file <path>] [--result-json <path>]',
+    options: [STUDY_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION, CONCURRENCY_OPTION, SOCKS_PROXY_OPTION, CA_CERT_OPTION, QUIET_OPTION, LOG_FILE_OPTION, RESULT_JSON_OPTION],
     examples: [
       'dicorre send --study all --config orthanc.config.json --workspace .dicorre/case-001',
       'dicorre send --study all --config orthanc.config.json --socks-proxy socks5://127.0.0.1:1080',
     ],
-    output: 'JSON summary with studies, succeeded, failed, skipped, and receipt verification records when available.',
+    output: 'JSON summary with aggregate send counts, failedFiles, warnings, plugin hook results, and receipt verification records when available.',
   },
   {
     name: 'server-probe',
     summary: 'Check the configured DICOMweb endpoint without sending DICOM files.',
-    usage: 'dicorre server-probe [--workspace <dir>] [--config <config.json>] [--socks-proxy <url>]',
-    options: [GLOBAL_OPTIONS[0], CONFIG_OPTION, SOCKS_PROXY_OPTION],
+    usage: 'dicorre server-probe [--workspace <dir>] [--config <config.json>] [--socks-proxy <url>] [--ca-cert <ca.pem>] [--quiet] [--log-file <path>] [--result-json <path>]',
+    options: [GLOBAL_OPTIONS[0], CONFIG_OPTION, SOCKS_PROXY_OPTION, CA_CERT_OPTION, QUIET_OPTION, LOG_FILE_OPTION, RESULT_JSON_OPTION],
     examples: [
       'dicorre server-probe --config orthanc.config.json',
       'dicorre server-probe --config orthanc.config.json --socks-proxy socks5://127.0.0.1:1080',
     ],
-    output: 'JSON summary with URL, HTTP status, and ok/reachable fields.',
+    output: 'JSON summary with URL, HTTP status, duration, and sanitized reachability/failure fields.',
   },
   {
     name: 'verify',
     summary: 'Verify selected sent studies are visible in the configured receipt backend without resending.',
-    usage: 'dicorre verify [--study <all|uid[,uid]>] [--wait] [--timeout <duration>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--socks-proxy <url>]',
-    options: [STUDY_OPTION, WAIT_OPTION, TIMEOUT_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION, SOCKS_PROXY_OPTION],
+    usage: 'dicorre verify [--study <all|uid[,uid]>] [--wait] [--timeout <duration>] [--workspace <dir>] [--state <file>] [--config <config.json>] [--socks-proxy <url>] [--ca-cert <ca.pem>] [--quiet] [--log-file <path>] [--result-json <path>]',
+    options: [STUDY_OPTION, WAIT_OPTION, TIMEOUT_OPTION, ...GLOBAL_OPTIONS, CONFIG_OPTION, SOCKS_PROXY_OPTION, CA_CERT_OPTION, QUIET_OPTION, LOG_FILE_OPTION, RESULT_JSON_OPTION],
     examples: [
       'dicorre verify --study all --workspace .dicorre/case-001',
       'dicorre verify --study 1.2.840.example --wait --timeout 15m --config project.config.json',
@@ -319,20 +329,22 @@ const help = (commandName?: string): Record<string, unknown> => {
   }
 }
 
-export const runCli = async (argv: string[]): Promise<unknown> => {
-  const parsed = parseArgs(argv)
-  if (parsed.command === '--help' || parsed.command === '-h') return help()
-  if (parsed.command === 'help') return help(parsed.positionals[0])
-  if (parsed.command === 'discover') return help()
-  if (parsed.options.help === true) return help(parsed.command)
+const writeResultJson = async (resultJson: string | undefined, result: unknown): Promise<void> => {
+  if (!resultJson) return
+  const out = path.resolve(resultJson)
+  await mkdir(path.dirname(out), { recursive: true })
+  await writeFile(out, `${JSON.stringify(result, null, 2)}\n`)
+}
 
+const runCliCommand = async (parsed: ParsedArgs): Promise<unknown> => {
   const workspace = asString(parsed.options.workspace)
   const state = asString(parsed.options.state)
   const config = asString(parsed.options.config)
   const concurrency = asNumber(parsed.options.concurrency)
   const socksProxy = asString(parsed.options['socks-proxy'])
+  const caCert = asString(parsed.options['ca-cert'])
 
-  return withCliSocksProxy(socksProxy, async () => {
+  return withCliNetwork({ socksProxy, caCert }, async () => {
     switch (parsed.command) {
       case 'ingest':
         if (parsed.positionals.length === 0) throw new Error('ingest requires at least one input path')
@@ -394,6 +406,24 @@ export const runCli = async (argv: string[]): Promise<unknown> => {
   })
 }
 
+export const runCli = async (argv: string[]): Promise<unknown> => {
+  const parsed = parseArgs(argv)
+  let result: unknown
+  if (parsed.command === '--help' || parsed.command === '-h') {
+    result = help()
+  } else if (parsed.command === 'help') {
+    result = help(parsed.positionals[0])
+  } else if (parsed.command === 'discover') {
+    result = help()
+  } else if (parsed.options.help === true) {
+    result = help(parsed.command)
+  } else {
+    result = await runCliCommand(parsed)
+  }
+  await writeResultJson(asString(parsed.options['result-json']), result)
+  return result
+}
+
 const isCliEntrypoint = (): boolean => {
   if (!process.argv[1]) return false
   try {
@@ -404,16 +434,34 @@ const isCliEntrypoint = (): boolean => {
 }
 
 if (isCliEntrypoint()) {
+  const parsed = parseArgs(process.argv.slice(2))
   const originalLog = console.log
-  console.log = (...args: unknown[]) => console.error(...args)
+  const originalError = console.error
+  const quiet = parsed.options.quiet === true
+  const logFile = asString(parsed.options['log-file'])
+  const writeOperationalLog = (...args: unknown[]) => {
+    if (quiet) return
+    const line = `${args.map((arg) => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' ')}\n`
+    if (logFile) {
+      const out = path.resolve(logFile)
+      mkdirSync(path.dirname(out), { recursive: true })
+      appendFileSync(out, line)
+    } else {
+      process.stderr.write(line)
+    }
+  }
+  console.log = (...args: unknown[]) => writeOperationalLog(...args)
+  console.error = (...args: unknown[]) => writeOperationalLog(...args)
 
   runCli(process.argv.slice(2))
     .then((result) => {
       console.log = originalLog
+      console.error = originalError
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
     })
     .catch((error) => {
       console.log = originalLog
+      console.error = originalError
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
       process.exitCode = 1
     })

@@ -6,7 +6,12 @@ import { Anonymizer } from '@dicorre/shared/services/anonymizer'
 import { ConfigService } from '@dicorre/shared/services/config'
 import type { AppConfig, DicomServerConfig } from '@dicorre/shared/services/config/schema'
 import { DicomProcessor } from '@dicorre/shared/services/dicomProcessor'
-import { DicomSender } from '@dicorre/shared/services/dicomSender'
+import {
+  DicomSender,
+  type SendFailureResult,
+  type SendSkippedResult,
+  type SendWarningResult,
+} from '@dicorre/shared/services/dicomSender'
 import { DownloadService } from '@dicorre/shared/services/downloadService'
 import { FileStorage } from '@dicorre/shared/services/fileStorage'
 import { PluginRegistry } from '@dicorre/shared/services/pluginRegistry'
@@ -54,6 +59,10 @@ export interface SendSummary {
   readonly succeeded: number
   readonly failed: number
   readonly skipped: number
+  readonly failedFiles: CliSendFailure[]
+  readonly skippedFiles: CliSendSkipped[]
+  readonly warnings: CliSendWarning[]
+  readonly plugins: PluginHookResult[]
   readonly verification?: ReceiptVerificationRecord[]
 }
 
@@ -67,9 +76,12 @@ export interface ServerProbeSummary {
   readonly method: 'GET'
   readonly ok: boolean
   readonly reachable: boolean
+  readonly durationMs: number
+  readonly failureKind?: 'http' | 'timeout' | 'tls' | 'network'
   readonly status?: number
   readonly statusText?: string
   readonly message?: string
+  readonly code?: string
 }
 
 export interface ConfigSummary {
@@ -111,6 +123,51 @@ export interface PluginsSummary {
   readonly supportedMimeTypes: string[]
 }
 
+export interface CliSendFailure {
+  readonly id: string
+  readonly fileName: string
+  readonly studyInstanceUID?: string
+  readonly accessionNumber?: string
+  readonly patientId?: string
+  readonly sopInstanceUID?: string
+  readonly modality?: string
+  readonly fileSize: number
+  readonly attempts: number
+  readonly failureKind: string
+  readonly httpStatus?: number
+  readonly timeoutMs?: number
+  readonly message: string
+}
+
+export interface CliSendSkipped {
+  readonly id: string
+  readonly fileName: string
+  readonly studyInstanceUID?: string
+  readonly accessionNumber?: string
+  readonly patientId?: string
+  readonly reason: string
+}
+
+export interface CliSendWarning {
+  readonly id: string
+  readonly fileName: string
+  readonly studyInstanceUID?: string
+  readonly accessionNumber?: string
+  readonly patientId?: string
+  readonly sopInstanceUID?: string
+  readonly message: string
+  readonly httpStatus?: number
+}
+
+export interface PluginHookResult {
+  readonly pluginId: string
+  readonly hook: 'beforeSend' | 'afterSend' | 'onSendError'
+  readonly studyInstanceUID?: string
+  readonly accessionNumber?: string
+  readonly status: 'success' | 'failed'
+  readonly message?: string
+}
+
 const resolveCliPaths = (workspaceArg?: string, stateArg?: string): CliPaths => {
   const workspace = path.resolve(workspaceArg ?? '.dicorre')
   return {
@@ -148,23 +205,111 @@ const runCliHook = <R>(
   pluginId: string,
   hookName: string,
   effect: Effect.Effect<void, unknown, R>,
-): Effect.Effect<void, never, R> => {
+): Effect.Effect<PluginHookResult, never, R> => {
   let originalLog: typeof console.log | undefined
   return Effect.sync(() => {
     originalLog = console.log
     console.log = (...args: unknown[]) => console.error(...args)
   }).pipe(
     Effect.zipRight(effect),
+    Effect.as({
+      pluginId,
+      hook: hookName as PluginHookResult['hook'],
+      status: 'success' as const,
+    }),
     Effect.ensuring(Effect.sync(() => {
       if (originalLog) console.log = originalLog
     })),
     Effect.catchAll((error) =>
       Effect.sync(() => {
-        console.error(`Plugin ${pluginId} ${hookName} hook failed:`, error)
+        console.error(`Plugin ${pluginId} ${hookName} hook failed: ${errorMessage(error)}`)
+        return {
+          pluginId,
+          hook: hookName as PluginHookResult['hook'],
+          status: 'failed' as const,
+          message: errorMessage(error),
+        }
       }),
     ),
   )
 }
+
+const errorCode = (error: unknown): string | undefined => {
+  if (error && typeof error === 'object') {
+    const direct = (error as { code?: unknown }).code
+    if (typeof direct === 'string') return direct
+    const cause = (error as { cause?: unknown }).cause
+    if (cause && typeof cause === 'object') {
+      const nested = (cause as { code?: unknown }).code
+      if (typeof nested === 'string') return nested
+    }
+  }
+  return undefined
+}
+
+const errorMessage = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : String(error)
+  const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined
+  const causeMessage = cause
+    ? cause instanceof Error
+      ? cause.message
+      : String(cause)
+    : undefined
+  return [message, causeMessage].filter(Boolean).join(': ')
+    .replace(/https?:\/\/[^\s"'}]+/g, '[redacted-url]')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/Basic\s+\S+/gi, 'Basic [redacted]')
+}
+
+const classifyFetchError = (error: unknown): 'timeout' | 'tls' | 'network' => {
+  const code = errorCode(error)
+  const message = errorMessage(error)
+  if (error instanceof Error && error.name === 'AbortError') return 'timeout'
+  if (code?.includes('CERT') || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || /certificate|tls|ssl/i.test(message)) {
+    return 'tls'
+  }
+  return 'network'
+}
+
+const fileContext = (study: DicomStudy, fileId: string) => ({
+  id: fileId,
+  studyInstanceUID: study.studyInstanceUID,
+  accessionNumber: study.accessionNumber,
+  patientId: study.assignedPatientId || study.patientId,
+})
+
+const toCliFailure = (study: DicomStudy, failure: SendFailureResult): CliSendFailure => ({
+  ...fileContext(study, failure.id),
+  fileName: failure.fileName,
+  sopInstanceUID: failure.sopInstanceUID,
+  modality: failure.modality,
+  fileSize: failure.fileSize,
+  attempts: failure.attempts,
+  failureKind: failure.failureKind,
+  httpStatus: failure.httpStatus,
+  timeoutMs: failure.timeoutMs,
+  message: errorMessage(failure.message),
+})
+
+const toCliSkipped = (study: DicomStudy, skipped: SendSkippedResult): CliSendSkipped => ({
+  ...fileContext(study, skipped.file.id),
+  fileName: skipped.fileName,
+  reason: skipped.reason,
+})
+
+const toCliWarning = (study: DicomStudy, warning: SendWarningResult): CliSendWarning => ({
+  ...fileContext(study, warning.file.id),
+  fileName: warning.fileName,
+  sopInstanceUID: warning.sopInstanceUID,
+  message: errorMessage(warning.message),
+  httpStatus: warning.httpStatus,
+})
+
+const withStudy = (study: DicomStudy, result: PluginHookResult): PluginHookResult => ({
+  ...result,
+  studyInstanceUID: study.studyInstanceUID,
+  accessionNumber: study.accessionNumber,
+})
 
 const buildReceiptVerifierSettings = (appConfig: any): ReceiptVerificationSettings | undefined => {
   const pluginSettings = appConfig.plugins?.settings?.['receipt-verifier'] || {}
@@ -426,12 +571,17 @@ export const send = async (
     let succeeded = 0
     let failed = 0
     let skipped = 0
+    const failedFiles: CliSendFailure[] = []
+    const skippedFiles: CliSendSkipped[] = []
+    const warnings: CliSendWarning[] = []
+    const plugins: PluginHookResult[] = []
     const sentIds = new Set<string>()
 
     for (const study of selected) {
       for (const plugin of hooks) {
         if (plugin.hooks.beforeSend) {
-          yield* runCliHook(plugin.id, 'beforeSend', plugin.hooks.beforeSend(study) as Effect.Effect<void, unknown, ConfigService>)
+          const hookResult = yield* runCliHook(plugin.id, 'beforeSend', plugin.hooks.beforeSend(study) as Effect.Effect<void, unknown, ConfigService>)
+          plugins.push(withStudy(study, hookResult))
         }
       }
 
@@ -441,7 +591,8 @@ export const send = async (
             const err = error instanceof Error ? error : new Error(String(error))
             for (const plugin of hooks) {
               if (plugin.hooks.onSendError) {
-                yield* runCliHook(plugin.id, 'onSendError', plugin.hooks.onSendError(study, err) as Effect.Effect<void, unknown, ConfigService>)
+                const hookResult = yield* runCliHook(plugin.id, 'onSendError', plugin.hooks.onSendError(study, err) as Effect.Effect<void, unknown, ConfigService>)
+                plugins.push(withStudy(study, hookResult))
               }
             }
             return yield* Effect.fail(error)
@@ -451,6 +602,9 @@ export const send = async (
       succeeded += result.succeededCount
       failed += result.failedCount
       skipped += result.skippedCount
+      failedFiles.push(...result.failed.map((failure) => toCliFailure(study, failure)))
+      skippedFiles.push(...result.skipped.map((skip) => toCliSkipped(study, skip)))
+      warnings.push(...result.warnings.map((warning) => toCliWarning(study, warning)))
       for (const success of result.succeeded) sentIds.add(success.file.id)
 
       if (result.failedCount === 0) {
@@ -463,7 +617,8 @@ export const send = async (
         }
         for (const plugin of hooks) {
           if (plugin.hooks.afterSend) {
-            yield* runCliHook(plugin.id, 'afterSend', plugin.hooks.afterSend(sentStudy) as Effect.Effect<void, unknown, ConfigService>)
+            const hookResult = yield* runCliHook(plugin.id, 'afterSend', plugin.hooks.afterSend(sentStudy) as Effect.Effect<void, unknown, ConfigService>)
+            plugins.push(withStudy(study, hookResult))
           }
         }
       }
@@ -475,7 +630,7 @@ export const send = async (
       .map((study) => verificationRecords.get(study.studyInstanceUID))
       .filter((record): record is ReceiptVerificationRecord => !!record)
       .map((record) => withNextCommand(record, paths.workspace, options.config))
-    return { studies: selected.length, succeeded, failed, skipped, verification }
+    return { studies: selected.length, succeeded, failed, skipped, failedFiles, skippedFiles, warnings, plugins, verification }
   })
 
   return Effect.runPromise(effect.pipe(Effect.provide(makeCliLayer(paths.workspace))))
@@ -495,28 +650,41 @@ export const serverProbe = async (
     const url = serverProbeUrl(serverConfig)
 
     return yield* Effect.promise(async () => {
+      const started = Date.now()
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), serverConfig.timeout ?? 30_000)
       try {
         const response = await fetch(url, {
           method: 'GET',
           headers: buildDicomServerHeaders(serverConfig),
+          signal: controller.signal,
         })
         await response.text().catch(() => '')
+        const durationMs = Date.now() - started
         return {
           url: redactUrl(url),
           method: 'GET' as const,
           ok: response.ok,
           reachable: true,
+          durationMs,
+          failureKind: response.ok ? undefined : 'http' as const,
           status: response.status,
           statusText: response.statusText,
         }
       } catch (error) {
+        const kind = classifyFetchError(error)
         return {
           url: redactUrl(url),
           method: 'GET' as const,
           ok: false,
           reachable: false,
-          message: error instanceof Error ? error.message : String(error),
+          durationMs: Date.now() - started,
+          failureKind: kind,
+          message: errorMessage(error),
+          code: errorCode(error),
         }
+      } finally {
+        clearTimeout(timeout)
       }
     })
   })

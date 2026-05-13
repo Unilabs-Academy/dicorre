@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "dicomServer": {
+    "url": "/api/orthanc/dicom-web",
+    "headers": {},
+    "timeout": 30000,
+    "testConnectionPath": "/studies",
+    "auth": null,
+    "description": "Orthanc DICOM-Web server configuration"
+  },
+  "anonymization": {
+    "profileOptions": [
+      "BasicProfile",
+      "RetainLongModifDatesOption"
+    ],
+    "removePrivateTags": true,
+    "useCustomHandlers": true,
+    "uidStrategy": "perRun",
+    "dateJitterDays": 31,
+    "organizationRoot": "1.2.826.0.1.3680043.8.498",
+    "replacements": {
+      "default": "REMOVED",
+      "Accession Number": "ACA{random}",
+      "Patient ID": "PAT{random}"
+    },
+    "preserveTags": [
+      "Instance Number",
+      "Modality",
+      "Manufacturer",
+      "Protocol Name"
+    ],
+    "tagsToRemove": [
+      "startswith:IssueDate",
+      "contains:Trial",
+      "startswith:PatientTelephoneNumber"
+    ]
+  },
+  "plugins": {
+    "enabled": [
+      "image-converter",
+      "pdf-converter",
+      "video-converter",
+      "send-logger",
+      "sent-notifier"
+    ],
+    "settings": {
+      "image-converter": {
+        "defaultModality": "OT",
+        "defaultSeriesDescription": "Converted Image"
+      },
+      "pdf-converter": {
+        "defaultModality": "DOC",
+        "defaultSeriesDescription": "PDF Conversion"
+      },
+      "video-converter": {
+        "samplingStrategy": "interval",
+        "intervalMs": 1000,
+        "uniqueHammingThreshold": 10,
+        "maxFrames": 500,
+        "outputMaxWidth": 1920,
+        "outputMaxHeight": 1080,
+        "seriesDescription": "Video Conversion"
+      },
+      "send-logger": {
+        "logLevel": "detailed"
+      },
+      "sent-notifier": {
+        "url": "https://example.org/api/sent",
+        "authHeaderName": "x-api-key",
+        "authHeaderValue": "YOUR_KEY"
+      },
+      "receipt-verifier": {
+        "provider": "dicomweb-qido",
+        "url": "/api/orthanc/dicom-web",
+        "archive": 1,
+        "headers": {},
+        "auth": null,
+        "pollIntervalMs": 10000,
+        "timeoutMs": 60000,
+        "requireInstanceCountMatch": true
+      }
+    }
+  }
+}

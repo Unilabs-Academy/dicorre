@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -18,27 +19,40 @@ const makeWorkspace = async () => {
   return workspace
 }
 
-const makeDicomWebServer = async () => {
+const makeDicomWebServer = async (options: {
+  readonly stowStatus?: number
+  readonly notifierStatus?: number
+  readonly qidoStatus?: number
+  readonly hangProbe?: boolean
+} = {}) => {
   let posts = 0
   let notifications = 0
   let qidoSearches = 0
   const server = createServer((req, res) => {
+    if (options.hangProbe && req.method === 'GET' && req.url?.startsWith('/dicom-web/studies')) {
+      return
+    }
     if (req.method === 'POST' && req.url === '/dicom-web/studies') {
       posts++
       req.resume()
-      res.writeHead(200, { 'content-type': 'application/dicom+json' })
+      res.writeHead(options.stowStatus ?? 200, { 'content-type': 'application/dicom+json' })
       res.end('{}')
       return
     }
     if (req.method === 'POST' && req.url === '/sent') {
       notifications++
       req.resume()
-      res.writeHead(204)
+      res.writeHead(options.notifierStatus ?? 204)
       res.end()
       return
     }
     if (req.method === 'GET' && req.url?.startsWith('/dicom-web/studies')) {
       qidoSearches++
+      if (options.qidoStatus && options.qidoStatus !== 200) {
+        res.writeHead(options.qidoStatus, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'test failure' }))
+        return
+      }
       const url = new URL(req.url, 'http://127.0.0.1')
       const studyInstanceUID = url.searchParams.get('StudyInstanceUID') || '1.2.3.test'
       res.writeHead(200, { 'content-type': 'application/dicom+json' })
@@ -72,6 +86,40 @@ const makeDicomWebServer = async () => {
       server.close((error) => error ? reject(error) : resolve())
     }),
   }
+}
+
+const runCliProcess = (args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(path.join(repoRoot, 'apps', 'cli', 'node_modules', '.bin', 'tsx'), [
+      'src/index.ts',
+      ...args,
+    ], { cwd: path.join(repoRoot, 'apps', 'cli') })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString()
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString()
+    })
+    child.on('error', reject)
+    child.on('close', (code) => resolve({ stdout, stderr, code }))
+  })
+
+const ingestAndAnonymizeOne = async (workspace: string) => {
+  await runCli([
+    'ingest',
+    fixture('IM-0001-0001.dcm'),
+    '--workspace',
+    workspace,
+  ])
+  await runCli([
+    'anonymize',
+    '--workspace',
+    workspace,
+    '--study',
+    'all',
+  ])
 }
 
 const makeSocksProxy = async () => {
@@ -180,8 +228,20 @@ describe('dicorre CLI', () => {
     expect(ingestHelp.command.usage).toContain('--no-converted')
     expect(ingestHelp.command.options.map((option) => option.name)).toContain('--concurrency')
 
-    const discover = await runCli(['discover']) as { commands: Array<{ name: string }> }
+    const sendHelp = await runCli(['send', '--help']) as {
+      command: { options: Array<{ name: string }> }
+    }
+    const sendOptions = sendHelp.command.options.map((option) => option.name)
+    expect(sendOptions).toContain('--ca-cert')
+    expect(sendOptions).toContain('--quiet')
+    expect(sendOptions).toContain('--log-file')
+    expect(sendOptions).toContain('--result-json')
+    expect(sendOptions).not.toContain('--tls-insecure')
+
+    const discover = await runCli(['discover']) as { commands: Array<{ name: string; options?: Array<{ name: string }> }> }
     expect(discover.commands).toHaveLength(help.commands.length)
+    const probe = discover.commands.find((command) => command.name === 'server-probe')
+    expect(probe?.options?.map((option) => option.name)).toContain('--ca-cert')
   })
 
   it('ingests, anonymizes, and packages a DICOM study without browser APIs', async () => {
@@ -285,6 +345,32 @@ describe('dicorre CLI', () => {
     expect(state.studies[0].patientId).not.toBe('PAT001')
   })
 
+  it('ingests DICOM files recursively from a folder without requiring an archive', async () => {
+    const workspace = await makeWorkspace()
+    const caseDir = path.join(workspace, 'case-folder')
+    const seriesA = path.join(caseDir, 'series-a')
+    const seriesB = path.join(caseDir, 'nested', 'series-b')
+    await mkdir(seriesA, { recursive: true })
+    await mkdir(seriesB, { recursive: true })
+    await copyFile(fixture('IM-0001-0001.dcm'), path.join(seriesA, 'IM-0001-0001.dcm'))
+    await copyFile(fixture('IM-0001-0001.dcm'), path.join(seriesB, 'IM-0001-0002.dcm'))
+
+    const ingest = await runCli([
+      'ingest',
+      caseDir,
+      '--workspace',
+      workspace,
+    ]) as { filesRead: number; filesParsed: number; studies: number }
+
+    expect(ingest.filesRead).toBe(2)
+    expect(ingest.filesParsed).toBe(2)
+    expect(ingest.studies).toBe(1)
+
+    const studies = await runCli(['studies', '--workspace', workspace]) as Array<{ files: number }>
+    expect(studies).toHaveLength(1)
+    expect(studies[0].files).toBe(2)
+  })
+
   it('probes and sends DICOM files through a SOCKS proxy', async () => {
     const workspace = await makeWorkspace()
 
@@ -310,6 +396,7 @@ describe('dicorre CLI', () => {
     const server = await makeDicomWebServer()
     const proxy = await makeSocksProxy()
     const configPath = path.join(workspace, 'config-for-socks-send.json')
+    const caPath = path.join(workspace, 'test-ca.pem')
     const config = JSON.parse(await readFile(path.join(repoRoot, 'packages', 'shared', 'app.config.json'), 'utf8'))
     config.dicomServer = {
       ...config.dicomServer,
@@ -327,6 +414,7 @@ describe('dicorre CLI', () => {
       requireInstanceCountMatch: true,
     }
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
+    await writeFile(caPath, 'not a real ca but valid enough for http endpoints\n')
 
     try {
       const probe = await runCli([
@@ -337,9 +425,12 @@ describe('dicorre CLI', () => {
         workspace,
         '--socks-proxy',
         proxy.url,
-      ]) as { ok: boolean; reachable: boolean; status: number }
+        '--ca-cert',
+        caPath,
+      ]) as { ok: boolean; reachable: boolean; status: number; durationMs: number }
 
       expect(probe).toMatchObject({ ok: true, reachable: true, status: 200 })
+      expect(probe.durationMs).toBeGreaterThanOrEqual(0)
 
       const send = await runCli([
         'send',
@@ -351,6 +442,8 @@ describe('dicorre CLI', () => {
         configPath,
         '--socks-proxy',
         proxy.url,
+        '--ca-cert',
+        caPath,
       ]) as {
         succeeded: number
         failed: number
@@ -368,6 +461,177 @@ describe('dicorre CLI', () => {
       await proxy.close()
       await server.close()
     }
+  })
+
+  it('validates CA certificate paths before network commands', async () => {
+    const workspace = await makeWorkspace()
+    const configPath = path.join(repoRoot, 'packages', 'shared', 'app.config.json')
+
+    await expect(runCli([
+      'server-probe',
+      '--workspace',
+      workspace,
+      '--config',
+      configPath,
+      '--ca-cert',
+      path.join(workspace, 'missing-ca.pem'),
+    ])).rejects.toThrow(/Unable to read CA certificate bundle/)
+  })
+
+  it('returns structured timeout metadata for server probes', async () => {
+    const workspace = await makeWorkspace()
+    const server = await makeDicomWebServer({ hangProbe: true })
+    const configPath = path.join(workspace, 'config-for-timeout-probe.json')
+    const config = JSON.parse(await readFile(path.join(repoRoot, 'packages', 'shared', 'app.config.json'), 'utf8'))
+    config.dicomServer = {
+      ...config.dicomServer,
+      url: server.url,
+      timeout: 25,
+    }
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
+
+    try {
+      const probe = await runCli([
+        'server-probe',
+        '--workspace',
+        workspace,
+        '--config',
+        configPath,
+      ]) as { ok: boolean; reachable: boolean; durationMs: number; failureKind: string; message: string }
+
+      expect(probe.ok).toBe(false)
+      expect(probe.reachable).toBe(false)
+      expect(probe.failureKind).toBe('timeout')
+      expect(probe.durationMs).toBeGreaterThanOrEqual(0)
+      expect(probe.message).toBeTruthy()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('includes sanitized per-file failures in send output', async () => {
+    const workspace = await makeWorkspace()
+    await ingestAndAnonymizeOne(workspace)
+
+    const server = await makeDicomWebServer({ stowStatus: 400 })
+    const configPath = path.join(workspace, 'config-for-failing-send.json')
+    const config = JSON.parse(await readFile(path.join(repoRoot, 'packages', 'shared', 'app.config.json'), 'utf8'))
+    config.dicomServer = {
+      ...config.dicomServer,
+      url: server.url,
+      timeout: 5000,
+    }
+    config.plugins.enabled = []
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
+
+    try {
+      const send = await runCli([
+        'send',
+        '--workspace',
+        workspace,
+        '--study',
+        'all',
+        '--config',
+        configPath,
+      ]) as {
+        succeeded: number
+        failed: number
+        skipped: number
+        failedFiles: Array<{ id: string; fileName: string; failureKind: string; httpStatus?: number; attempts: number; message: string }>
+      }
+
+      expect(send).toMatchObject({ succeeded: 0, failed: 1, skipped: 0 })
+      expect(send.failedFiles).toHaveLength(1)
+      expect(send.failedFiles[0]).toMatchObject({
+        failureKind: 'http',
+        httpStatus: 400,
+      })
+      expect(send.failedFiles[0].id).toBeTruthy()
+      expect(send.failedFiles[0].fileName).toBeTruthy()
+      expect(send.failedFiles[0].attempts).toBeGreaterThan(0)
+      expect(send.failedFiles[0].message).not.toContain(server.url)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('separates plugin and receipt failures from DICOM send counts', async () => {
+    const workspace = await makeWorkspace()
+    await ingestAndAnonymizeOne(workspace)
+
+    const server = await makeDicomWebServer({ notifierStatus: 403, qidoStatus: 403 })
+    const configPath = path.join(workspace, 'config-for-plugin-failures.json')
+    const config = JSON.parse(await readFile(path.join(repoRoot, 'packages', 'shared', 'app.config.json'), 'utf8'))
+    config.dicomServer = {
+      ...config.dicomServer,
+      url: server.url,
+      timeout: 5000,
+    }
+    config.plugins.settings['sent-notifier'].url = server.sentUrl
+    config.plugins.settings['sent-notifier'].authHeaderValue = 'test-key'
+    config.plugins.enabled = [...new Set([...config.plugins.enabled, 'sent-notifier', 'receipt-verifier'])]
+    config.plugins.settings['receipt-verifier'] = {
+      provider: 'dicomweb-qido',
+      url: server.url,
+      pollIntervalMs: 1,
+      timeoutMs: 1,
+      requireInstanceCountMatch: true,
+    }
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
+
+    try {
+      const send = await runCli([
+        'send',
+        '--workspace',
+        workspace,
+        '--study',
+        'all',
+        '--config',
+        configPath,
+      ]) as {
+        succeeded: number
+        failed: number
+        skipped: number
+        plugins: Array<{ pluginId: string; hook: string; status: string; message?: string }>
+        verification?: Array<{ state: string; message?: string }>
+      }
+
+      expect(send).toMatchObject({ succeeded: 1, failed: 0, skipped: 0 })
+      expect(send.plugins).toEqual(expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'sent-notifier', hook: 'afterSend', status: 'failed' }),
+        expect.objectContaining({ pluginId: 'receipt-verifier', hook: 'afterSend', status: 'success' }),
+      ]))
+      expect(send.plugins.find((plugin) => plugin.pluginId === 'sent-notifier')?.message).toContain('sent-notifier failed')
+      expect(send.verification?.[0]).toMatchObject({ state: 'error' })
+      expect(send.verification?.[0]?.message).toContain('403')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('writes final JSON to result files and keeps quiet CLI stdout parseable', async () => {
+    const workspace = await makeWorkspace()
+    const resultPath = path.join(workspace, 'result.json')
+    const logPath = path.join(workspace, 'ops.log')
+
+    const result = await runCli([
+      'help',
+      '--result-json',
+      resultPath,
+    ]) as { name: string }
+    expect(result.name).toBe('dicorre')
+    expect(JSON.parse(await readFile(resultPath, 'utf8')).name).toBe('dicorre')
+
+    const processResult = await runCliProcess([
+      'help',
+      '--quiet',
+      '--log-file',
+      logPath,
+    ])
+    expect(processResult.code).toBe(0)
+    expect(processResult.stderr).toBe('')
+    expect(JSON.parse(processResult.stdout).name).toBe('dicorre')
+    await expect(stat(logPath)).rejects.toThrow()
   })
 
   it('filters mixed SIP ZIP archives before listing grouped studies', async () => {
