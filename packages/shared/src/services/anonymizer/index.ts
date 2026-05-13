@@ -46,6 +46,15 @@ const STRING_VR_MAX_LENGTHS: Record<string, number> = {
   TM: 16, // Time
 }
 
+const DERIVED_REPOSITORY_COUNT_TAGS = [
+  '00201200', // Number of Patient Related Studies
+  '00201202', // Number of Patient Related Series
+  '00201204', // Number of Patient Related Instances
+  '00201206', // Number of Study Related Series
+  '00201208', // Number of Study Related Instances
+  '00201209', // Number of Series Related Instances
+] as const
+
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
   bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 
@@ -106,6 +115,26 @@ function ensurePatientIdTag(uint8Array: Uint8Array, patientId?: string): Uint8Ar
     vr: 'LO',
     Value: [patientId],
   }
+
+  const buffer = dicomData.write({ allowInvalidVRLength: true })
+  return new Uint8Array(buffer)
+}
+
+function removeDerivedRepositoryCountTags(uint8Array: Uint8Array): Uint8Array {
+  const arrayBuffer = toArrayBuffer(uint8Array)
+  const dicomData = dcmjs.data.DicomMessage.readFile(arrayBuffer) as any
+  const dict = dicomData.dict as Record<string, unknown>
+
+  let modified = false
+
+  for (const countTag of DERIVED_REPOSITORY_COUNT_TAGS) {
+    if (countTag in dict) {
+      delete dict[countTag]
+      modified = true
+    }
+  }
+
+  if (!modified) return uint8Array
 
   const buffer = dicomData.write({ allowInvalidVRLength: true })
   return new Uint8Array(buffer)
@@ -415,7 +444,11 @@ export const AnonymizerLive = Layer.effect(
             console.log(
               `Deidentified ${file.fileName} using library, result size: ${result.length}`,
             )
-            return ensurePatientIdTag(result, processedReplacements[tag('Patient ID')])
+            const withPatientId = ensurePatientIdTag(
+              result,
+              processedReplacements[tag('Patient ID')],
+            )
+            return removeDerivedRepositoryCountTags(withPatientId)
           },
           catch: (error: any) => {
             console.error(`Library deidentification failed:`, error)

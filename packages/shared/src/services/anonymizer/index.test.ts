@@ -41,6 +41,19 @@ function removeDicomTag(file: DicomFile, tag: string): DicomFile {
   }
 }
 
+function addDicomTags(file: DicomFile, tags: Record<string, { vr: string; Value: any[] }>): DicomFile {
+  const dicomData = dcmjs.data.DicomMessage.readFile(file.arrayBuffer) as any
+  Object.assign(dicomData.dict, tags)
+  const buffer = dicomData.write({ allowInvalidVRLength: true })
+
+  return {
+    ...file,
+    id: `${file.id}-with-added-tags`,
+    arrayBuffer: buffer,
+    fileSize: buffer.byteLength,
+  }
+}
+
 describe('Anonymizer Service (Effect Service Testing)', () => {
   // AnonymizerLive requires DicomProcessor and ConfigService, so we compose them properly
   const testLayer = Layer.mergeAll(
@@ -117,6 +130,45 @@ describe('Anonymizer Service (Effect Service Testing)', () => {
 
       expect(result.anonymized).toBe(true)
       expect(result.arrayBuffer).toBeDefined()
+    })
+
+    it('removes stale derived repository count tags during anonymization', async () => {
+      const staleCountTags = {
+        '00201200': { vr: 'IS', Value: ['99'] },
+        '00201202': { vr: 'IS', Value: ['98'] },
+        '00201204': { vr: 'IS', Value: ['97'] },
+        '00201206': { vr: 'IS', Value: ['96'] },
+        '00201208': { vr: 'IS', Value: ['3652'] },
+        '00201209': { vr: 'IS', Value: ['95'] },
+      }
+      const dicomFile = addDicomTags(
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),
+        staleCountTags,
+      )
+
+      const sourceDict = (dcmjs.data.DicomMessage.readFile(dicomFile.arrayBuffer) as any).dict
+      for (const countTag of Object.keys(staleCountTags)) {
+        expect(sourceDict[countTag]).toBeDefined()
+      }
+
+      const parsedFile = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processor = yield* DicomProcessor
+          return yield* processor.parseFile(dicomFile)
+        }).pipe(Effect.provide(testLayer))
+      )
+
+      const result = await runTest(Effect.gen(function* () {
+        const anonymizer = yield* Anonymizer
+        const configService = yield* ConfigService
+        const config = yield* configService.getAnonymizationConfig
+        return yield* anonymizer.anonymizeFile(parsedFile, config)
+      }))
+
+      const resultDict = (dcmjs.data.DicomMessage.readFile(result.arrayBuffer) as any).dict
+      for (const countTag of Object.keys(staleCountTags)) {
+        expect(resultDict[countTag]).toBeUndefined()
+      }
     })
 
     it('should anonymize multiple files', async () => {
