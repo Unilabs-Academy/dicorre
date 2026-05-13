@@ -457,6 +457,47 @@ describe('Anonymizer Service (Effect Service Testing)', () => {
       expect(meta1?.sopInstanceUID).not.toBe(meta2?.sopInstanceUID)
     })
 
+    it('enforces perRun core UIDs when custom handlers are disabled', async () => {
+      const files = [
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC')
+      ]
+
+      const parsedFiles = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processor = yield* DicomProcessor
+          return yield* processor.parseFiles(files)
+        }).pipe(Effect.provide(DicomProcessorLive))
+      )
+
+      const originalMeta = parsedFiles[0].metadata
+      const result = await runTest(Effect.gen(function* () {
+        const anonymizer = yield* Anonymizer
+        const configService = yield* ConfigService
+        const baseConfig = yield* configService.getAnonymizationConfig
+        const config: AnonymizationConfig = {
+          ...baseConfig,
+          profileOptions: ['BasicProfile', 'RetainUIDsOption'],
+          uidStrategy: 'perRun',
+          useCustomHandlers: false,
+        }
+
+        const run1 = yield* anonymizer.anonymizeStudy('uid-per-run-no-custom-study', parsedFiles, config, { concurrency: 1 })
+        const run2 = yield* anonymizer.anonymizeStudy('uid-per-run-no-custom-study', parsedFiles, config, { concurrency: 1 })
+
+        return { run1, run2 }
+      }))
+
+      const meta1 = result.run1.anonymizedFiles[0].metadata
+      const meta2 = result.run2.anonymizedFiles[0].metadata
+      expect(meta1?.studyInstanceUID).toBeDefined()
+      expect(meta2?.studyInstanceUID).toBeDefined()
+      expect(meta1?.studyInstanceUID).not.toBe(originalMeta?.studyInstanceUID)
+      expect(meta2?.studyInstanceUID).not.toBe(originalMeta?.studyInstanceUID)
+      expect(meta1?.studyInstanceUID).not.toBe(meta2?.studyInstanceUID)
+      expect(meta1?.seriesInstanceUID).not.toBe(meta2?.seriesInstanceUID)
+      expect(meta1?.sopInstanceUID).not.toBe(meta2?.sopInstanceUID)
+    })
+
     it('keeps core UIDs stable across runs when uidStrategy is deterministic', async () => {
       const files = [
         loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC')

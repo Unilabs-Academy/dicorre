@@ -461,7 +461,6 @@ const waitForIdleForAgent = async (input: Record<string, unknown>) => ({
 
 const clearAllForAgent = async (input: Record<string, unknown>) => {
   clearFiles()
-  await clearSession()
   const status = shouldWait(input)
     ? await waitForAgentIdle(toTimeoutMs(input, 30000))
     : getAgentStatus()
@@ -578,7 +577,6 @@ function confirmResendAfterDialog() {
 
 function clearFiles() {
   appState.clearFiles()
-  clearSession()
 }
 
 function clearSelectedFiles() {
@@ -591,7 +589,6 @@ function handleConfigLoaded() {
 
 const {
   restore: restoreSession,
-  clear: clearSession,
   isRestoring: persistenceRestoring,
   restoreProgress: persistenceProgress
 } = useSessionPersistence(runtime, appState.dicomFiles, appState.studies)

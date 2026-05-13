@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Effect, Layer } from 'effect'
-import { Anonymizer, type StudyAnonymizationContext } from '@/services/anonymizer'
+import { Anonymizer, createValueReplacementCache, type StudyAnonymizationContext } from '@/services/anonymizer'
 import { OPFSStorage } from '@/services/opfsStorage'
 import { anonymizeStudyIncrementally, type AnonymizationFileRef } from './anonymizationPipeline'
 import type { DicomFile } from '@/types/dicom'
@@ -71,6 +71,8 @@ function makeLayer(options: { failOnFileId?: string } = {}) {
       studyId,
       config,
       sharedRandom: 'SHARED1',
+      runId: 'test-run',
+      valueCache: createValueReplacementCache(),
       patientIdMap: contextOptions.patientIdMap,
       overrides: contextOptions.overrides,
     }),

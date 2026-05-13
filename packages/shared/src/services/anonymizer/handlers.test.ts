@@ -371,9 +371,9 @@ describe('anonymizationHandlers', () => {
   })
 
   describe('clearValueCache', () => {
-    it('should clear the value cache', () => {
+    it('should scope value caches to handler instances', () => {
       const handler = createValueReplacementHandler('test-study-id')
-      
+
       // Generate a value first
       const element1 = createMockElement({
         keyword: 'PatientID',
@@ -382,15 +382,13 @@ describe('anonymizationHandlers', () => {
       handler(element1, {})
       const firstValue = element1.value
 
-      // Clear cache
-      clearValueCache()
-
-      // Generate again - should be different
+      // A new handler gets a fresh cache; values are not shared globally.
+      const nextHandler = createValueReplacementHandler('test-study-id')
       const element2 = createMockElement({
         keyword: 'PatientID',
         value: 'TEST123'
       })
-      handler(element2, {})
+      nextHandler(element2, {})
 
       expect(element2.value).not.toBe(firstValue)
     })

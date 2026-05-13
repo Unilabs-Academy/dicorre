@@ -19,10 +19,17 @@ import * as dcmjs from 'dcmjs'
 import type { DicomFile } from '@dicorre/shared/types/dicom'
 import { DicomProcessor } from '../dicomProcessor'
 import type { AnonymizationConfig } from '../config/schema'
-import { getAllSpecialHandlers, getAllSpecialHandlersWithOverrides } from './handlers'
+import {
+  createValueReplacementCache,
+  getAllSpecialHandlers,
+  getAllSpecialHandlersWithOverrides,
+  type ValueReplacementCache,
+} from './handlers'
 import { getDicomReferenceDate, getDicomReferenceTime } from './dicomHelpers'
 import { AnonymizationError, type AnonymizerError } from '@dicorre/shared/types/effects'
 import { tag } from '@dicorre/shared/utils/dicom-tag-dictionary'
+
+export { createValueReplacementCache } from './handlers'
 
 /**
  * Max lengths for string-based DICOM VRs (per DICOM PS3.5).
@@ -122,6 +129,8 @@ export interface StudyAnonymizationContext {
   studyId: string
   config: AnonymizationConfig
   sharedRandom: string
+  runId: string
+  valueCache: ValueReplacementCache
   patientIdMap?: Record<string, string>
   overrides?: Record<string, string>
 }
@@ -147,6 +156,8 @@ export class Anonymizer extends Context.Tag('Anonymizer')<
       sharedRandom?: string,
       patientIdMap?: Record<string, string>,
       overrides?: Record<string, string>,
+      runId?: string,
+      valueCache?: ValueReplacementCache,
     ) => Effect.Effect<DicomFile, AnonymizerError>
     readonly anonymizeFileInStudyContext: (
       file: DicomFile,
@@ -175,6 +186,10 @@ export const AnonymizerLive = Layer.effect(
       return result
     }
 
+    const generateRunId = (): string =>
+      globalThis.crypto?.randomUUID?.() ??
+      `${Date.now()}-${Math.random().toString(36).slice(2)}`
+
     const processReplacements = (
       replacements: Record<string, string>,
       sharedRandom?: string,
@@ -197,12 +212,15 @@ export const AnonymizerLive = Layer.effect(
       options: Pick<StudyAnonymizationOptions, 'patientIdMap' | 'overrides'> = {},
     ): StudyAnonymizationContext => {
       const sharedRandom = generateRandomString()
-      console.log(`[Effect Anonymizer] Using shared random string for study ${studyId}: ${sharedRandom}`)
+      const runId = generateRunId()
+      console.log(`[Effect Anonymizer] Using anonymization run ${runId} for study ${studyId}`)
 
       return {
         studyId,
         config,
         sharedRandom,
+        runId,
+        valueCache: createValueReplacementCache(),
         patientIdMap: options.patientIdMap,
         overrides: options.overrides,
       }
@@ -214,6 +232,8 @@ export const AnonymizerLive = Layer.effect(
       sharedRandom?: string,
       patientIdMap?: Record<string, string>,
       overrides?: Record<string, string>,
+      runId: string = generateRunId(),
+      valueCache: ValueReplacementCache = createValueReplacementCache(),
     ): Effect.Effect<DicomFile, AnonymizerError> =>
       Effect.gen(function* () {
         // Check if file has metadata
@@ -253,7 +273,22 @@ export const AnonymizerLive = Layer.effect(
         }
 
         // Map string profile options to actual profile objects
-        const profileOptions: ProfileOption[] = (config.profileOptions || ['BasicProfile']).map(
+        const uidStrategy = config.uidStrategy ?? 'perRun'
+        const enforceUidStrategy = uidStrategy === 'perRun' || uidStrategy === 'deterministic'
+        const requestedProfileOptions = config.profileOptions || ['BasicProfile']
+        const filteredProfileOptions = enforceUidStrategy
+          ? requestedProfileOptions.filter((option) => option !== 'RetainUIDsOption')
+          : requestedProfileOptions
+        const effectiveProfileOptions =
+          filteredProfileOptions.length > 0 ? filteredProfileOptions : ['BasicProfile']
+
+        if (enforceUidStrategy && requestedProfileOptions.includes('RetainUIDsOption')) {
+          console.warn(
+            `Ignoring RetainUIDsOption because UID Strategy is ${uidStrategy}; generated UID policy takes precedence.`,
+          )
+        }
+
+        const profileOptions: ProfileOption[] = effectiveProfileOptions.map(
           (option) => {
             switch (option) {
               case 'BasicProfile':
@@ -285,9 +320,14 @@ export const AnonymizerLive = Layer.effect(
         )
 
         // Keep only configured preserveTags; do not force-keep overrides so they can be replaced
-        const configuredKeep = (config.preserveTags ? [...config.preserveTags] : []).map((k) =>
-          tag(k),
-        )
+        const coreUidTags = new Set([
+          tag('Study Instance UID'),
+          tag('Series Instance UID'),
+          tag('SOP Instance UID'),
+        ])
+        const configuredKeep = (config.preserveTags ? [...config.preserveTags] : [])
+          .map((k) => tag(k))
+          .filter((k) => !enforceUidStrategy || !coreUidTags.has(k))
         const keep = Array.from(new Set(configuredKeep || []))
 
         // Configure deidentifier options
@@ -302,30 +342,39 @@ export const AnonymizerLive = Layer.effect(
           getReferenceTime: getDicomReferenceTime,
         }
 
-        // Add custom special handlers
-        if (config.useCustomHandlers || (overrides && Object.keys(overrides).length > 0)) {
+        // Add special handlers. Core UID handlers are always installed so
+        // uidStrategy cannot be bypassed by profile or custom-handler settings.
+        if (config.useCustomHandlers || enforceUidStrategy || (overrides && Object.keys(overrides).length > 0)) {
           const tagsToRemove = config.tagsToRemove ? [...config.tagsToRemove] : []
           const originalStudyId = file.metadata?.studyInstanceUID || 'unknown'
-          const uidStrategy = config.uidStrategy ?? 'perRun'
           const uidScopeKey =
             uidStrategy === 'perRun'
-              ? `${originalStudyId}:${sharedRandom || generateRandomString()}`
+              ? `${originalStudyId}:${runId}`
               : originalStudyId
+          const handlerOptions = {
+            disablePatientId: !!patientIdMap,
+            uidScopeKey,
+            uidStrategy,
+            organizationRoot: config.organizationRoot,
+            valueCache,
+            uidsOnly: !config.useCustomHandlers,
+          }
           // If a patientIdMap is provided, disable PatientID generation in handlers to prevent conflicts
-          const disablePatientId = !!patientIdMap
           const specialHandlers =
             overrides && Object.keys(overrides).length > 0
               ? getAllSpecialHandlersWithOverrides(
                   config.dateJitterDays || 31,
-                  tagsToRemove,
+                  config.useCustomHandlers ? tagsToRemove : [],
                   originalStudyId,
-                  { disablePatientId, uidScopeKey },
+                  handlerOptions,
                   overrides,
                 )
-              : getAllSpecialHandlers(config.dateJitterDays || 31, tagsToRemove, originalStudyId, {
-                  disablePatientId,
-                  uidScopeKey,
-                })
+              : getAllSpecialHandlers(
+                  config.dateJitterDays || 31,
+                  config.useCustomHandlers ? tagsToRemove : [],
+                  originalStudyId,
+                  handlerOptions,
+                )
           deidentifierConfig.specialHandlers = specialHandlers
         }
 
@@ -416,6 +465,8 @@ export const AnonymizerLive = Layer.effect(
         context.sharedRandom,
         context.patientIdMap,
         context.overrides,
+        context.runId,
+        context.valueCache,
       )
 
     const anonymizeStudy = (

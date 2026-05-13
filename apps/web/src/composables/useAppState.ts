@@ -24,10 +24,11 @@ import type {
   SendWarningResult
 } from '@/services/dicomSender'
 import { toast } from 'vue-sonner'
-import { getAnonymizationWorkerManager } from '@/workers/workerManager'
+import { destroyWorkerManagers, getAnonymizationWorkerManager } from '@/workers/workerManager'
 import { StudyLogger } from '@/services/studyLogger'
 import { serializeError } from '@/services/studyLogger/errorUtils'
 import { OPFSStorage } from '@/services/opfsStorage'
+import { SessionPersistence } from '@/services/sessionPersistence'
 
 export function useAppState(runtime: RuntimeType) {
   // Core application state
@@ -432,7 +433,8 @@ export function useAppState(runtime: RuntimeType) {
 
       const promises = selectedSnapshot.map(study => {
         const studyFiles = study.series.flatMap(series => series.files)
-        const allAnonymized = studyFiles.length > 0 && studyFiles.every(f => f.anonymized)
+        const hasAnonymizedFiles = studyFiles.some(f => f.anonymized)
+        const hasOriginalFiles = studyFiles.some(f => !f.anonymized)
 
         // Build patientIdMap based on currently assigned IDs for all studies in memory
         const patientIdMap: Record<string, string> = {}
@@ -445,11 +447,12 @@ export function useAppState(runtime: RuntimeType) {
 
         // Minimal intervention: only force StudyInstanceUID if an anonymized file already exists
         const existingAnonUid = studyFiles.find(f => f.anonymized && f.metadata?.studyInstanceUID)?.metadata?.studyInstanceUID
+        const shouldPinExistingStudyUid = hasAnonymizedFiles && hasOriginalFiles && !!existingAnonUid
         const overrides: Record<string, string> = {
           ...(study.customFields ?? {}),
           ...(study.assignedPatientId ? { 'Patient ID': study.assignedPatientId } : {}),
-          // Do not pin Study Instance UID if all files are already anonymized
-          ...(!allAnonymized && existingAnonUid ? { 'Study Instance UID': existingAnonUid } : {})
+          // Only auto-pin for mixed partial re-anonymization; explicit customFields still win for merges.
+          ...(shouldPinExistingStudyUid ? { 'Study Instance UID': existingAnonUid } : {})
         }
 
         // Initial progress
@@ -1107,6 +1110,15 @@ export function useAppState(runtime: RuntimeType) {
     }
   }
 
+  const clearPersistedSession = () => {
+    runtime.runPromise(
+      Effect.gen(function* () {
+        const persistence = yield* SessionPersistence
+        yield* persistence.clear
+      })
+    ).catch(() => { })
+  }
+
   const clearFiles = () => {
     dicomFiles.value.forEach(file => {
       if (file.metadata) file.metadata = undefined
@@ -1120,6 +1132,8 @@ export function useAppState(runtime: RuntimeType) {
     clearAllProgress()
     clearAllSendingProgress()
     clearSelection()
+    clearPersistedSession()
+    destroyWorkerManagers()
   }
 
   const clearSelected = () => {
@@ -1157,6 +1171,11 @@ export function useAppState(runtime: RuntimeType) {
     clearSelection()
 
     successMessage.value = `Cleared ${selectedStudiesToClear.length} selected ${selectedStudiesToClear.length === 1 ? 'study' : 'studies'}`
+
+    if (dicomFiles.value.length === 0) {
+      clearPersistedSession()
+      destroyWorkerManagers()
+    }
   }
 
   onMounted(async () => {

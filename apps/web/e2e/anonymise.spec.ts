@@ -8,6 +8,69 @@ import {
   waitForProcessingComplete,
 } from './helpers';
 
+async function selectFirstStudyAndAnonymize(page: import('@playwright/test').Page): Promise<string> {
+  await expect(page.getByTestId('studies-data-table')).toBeVisible();
+
+  const studyCheckboxes = page.getByRole('checkbox');
+  await studyCheckboxes.nth(1).click();
+
+  const anonymizeButton = page.getByTestId('anonymize-button');
+  await expect(anonymizeButton).toBeEnabled();
+  await anonymizeButton.click();
+  await expect(page.getByTestId('anonymized-count-badge')).toContainText(/[1-9]/);
+
+  const uidCell = page.getByTestId('cell-study-uid').first();
+  await expect(uidCell).toBeVisible();
+  const uid = await uidCell.getAttribute('title');
+  expect(uid).toBeTruthy();
+  return uid!;
+}
+
+test('per-run UID strategy creates a new Study UID after clearing and re-uploading the same case', async ({ page }) => {
+  await page.goto('/');
+  await waitForAppReady(page);
+
+  const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip');
+
+  await uploadFiles(page, testZipPath);
+  await waitForProcessingComplete(page);
+  const firstUid = await selectFirstStudyAndAnonymize(page);
+
+  await page.getByTestId('dropdown-menu-trigger').click();
+  await page.getByTestId('clear-menu-item').click();
+  await page.getByTestId('confirm-clear').click();
+  await expect(page.getByTestId('cell-study-uid')).toHaveCount(0);
+
+  await uploadFiles(page, testZipPath);
+  await waitForProcessingComplete(page);
+  const secondUid = await selectFirstStudyAndAnonymize(page);
+
+  expect(secondUid).not.toBe(firstUid);
+});
+
+test('per-run UID strategy creates a new Study UID after clearing the selected case', async ({ page }) => {
+  await page.goto('/');
+  await waitForAppReady(page);
+
+  const testZipPath = path.join(process.cwd(), '../../test-data/CASES/1_case_3_series_6_images.zip');
+
+  await uploadFiles(page, testZipPath);
+  await waitForProcessingComplete(page);
+  const firstUid = await selectFirstStudyAndAnonymize(page);
+
+  await page.getByRole('checkbox').nth(1).click();
+  await page.getByTestId('dropdown-menu-trigger').click();
+  await page.getByTestId('clear-menu-item').click();
+  await page.getByTestId('confirm-clear').click();
+  await expect(page.getByTestId('cell-study-uid')).toHaveCount(0);
+
+  await uploadFiles(page, testZipPath);
+  await waitForProcessingComplete(page);
+  const secondUid = await selectFirstStudyAndAnonymize(page);
+
+  expect(secondUid).not.toBe(firstUid);
+});
+
 test('uploads zip file and checks anonymization works', async ({ page }) => {
   await page.goto('/');
 

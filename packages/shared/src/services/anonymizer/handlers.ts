@@ -8,16 +8,29 @@ import { tag } from '@dicorre/shared/utils/dicom-tag-dictionary'
 // Note: Using any type for DicomElement as the library types may be incomplete
 type DicomElement = any
 
-// Cache for consistent value generation within a single study
-// Key is studyId, value is a map of field->originalValue->newValue
-const studyValueCache = new Map<string, Map<string, Map<string, string>>>()
+// Cache for consistent value generation within one anonymization context.
+// Key is studyId, value is a map of field->originalValue->newValue.
+export type ValueReplacementCache = Map<string, Map<string, Map<string, string>>>
+
+export function createValueReplacementCache(): ValueReplacementCache {
+  return new Map()
+}
 
 /**
  * Generate a DICOM UID with organization root
  */
-function generateUID(): string {
-  // Using a sample organization root - should be configured per deployment
-  const ORG_ROOT = '1.2.826.0.1.3680043.8.498'
+function normalizeOrganizationRoot(root?: string): string {
+  const fallback = '1.2.826.0.1.3680043.8.498'
+  const normalized = (root || fallback).replace(/\.+$/g, '')
+  return normalized.length > 0 ? normalized : fallback
+}
+
+function truncateUid(uid: string): string {
+  return uid.substring(0, 64).replace(/\.$/, '')
+}
+
+function generateUID(organizationRoot?: string): string {
+  const root = normalizeOrganizationRoot(organizationRoot)
 
   // Generate a UUID-based identifier
   const uuid =
@@ -25,10 +38,36 @@ function generateUID(): string {
     Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
   const bigintUid = parseInt(uuid.substring(0, 16), 16).toString()
 
-  const fullUid = `${ORG_ROOT}.${bigintUid}`
+  return truncateUid(`${root}.${bigintUid}`)
+}
 
-  // DICOM UID is limited to 64 characters
-  return fullUid.substring(0, 64)
+function fnv1a64(value: string): bigint {
+  let hash = 0xcbf29ce484222325n
+  const prime = 0x100000001b3n
+
+  for (let i = 0; i < value.length; i++) {
+    hash ^= BigInt(value.charCodeAt(i))
+    hash = BigInt.asUintN(64, hash * prime)
+  }
+
+  return hash
+}
+
+function fnv1a32(value: string): number {
+  let hash = 0x811c9dc5
+
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+
+  return hash
+}
+
+function generateDeterministicUID(fieldName: string, originalValue: string, studyId: string, organizationRoot?: string): string {
+  const root = normalizeOrganizationRoot(organizationRoot)
+  const key = `${fieldName}:${studyId}:${originalValue}`
+  return truncateUid(`${root}.${fnv1a64(key).toString()}.${fnv1a32(`uid:${key}`).toString()}`)
 }
 
 /**
@@ -58,12 +97,18 @@ function generateStudyID(): string {
 /**
  * Get cached value or generate new one for a specific study
  */
-function getCachedValue(fieldName: string, originalValue: string, studyId: string): string {
-  if (!studyValueCache.has(studyId)) {
-    studyValueCache.set(studyId, new Map())
+function getCachedValue(
+  fieldName: string,
+  originalValue: string,
+  studyId: string,
+  cache: ValueReplacementCache,
+  options: ValueReplacementHandlerOptions = {},
+): string {
+  if (!cache.has(studyId)) {
+    cache.set(studyId, new Map())
   }
 
-  const studyCache = studyValueCache.get(studyId)!
+  const studyCache = cache.get(studyId)!
 
   if (!studyCache.has(fieldName)) {
     studyCache.set(fieldName, new Map())
@@ -90,7 +135,10 @@ function getCachedValue(fieldName: string, originalValue: string, studyId: strin
     case 'StudyInstanceUID':
     case 'SeriesInstanceUID':
     case 'SOPInstanceUID':
-      newValue = generateUID()
+      newValue =
+        options.uidStrategy === 'deterministic'
+          ? generateDeterministicUID(fieldName, originalValue, studyId, options.organizationRoot)
+          : generateUID(options.organizationRoot)
       break
     default:
       newValue = generateUID()
@@ -222,6 +270,10 @@ export function createDateJitterHandler(maxDays: number = 31) {
 interface ValueReplacementHandlerOptions {
   disablePatientId?: boolean
   uidScopeKey?: string
+  uidStrategy?: 'perRun' | 'deterministic'
+  organizationRoot?: string
+  valueCache?: ValueReplacementCache
+  uidsOnly?: boolean
 }
 
 function resolveUidScopeKey(studyId: string, options?: ValueReplacementHandlerOptions): string {
@@ -233,6 +285,8 @@ function normalizeTagNumber(tagValue: string): string {
 }
 
 export function createValueReplacementHandler(studyId: string, options?: ValueReplacementHandlerOptions) {
+  const valueCache = options?.valueCache ?? createValueReplacementCache()
+
   return (element: DicomElement, _options: any) => {
     const tagName = element.keyword || element.name || ''
     const tagNumber = normalizeTagNumber(element.tag?.toString() || '')
@@ -249,32 +303,38 @@ export function createValueReplacementHandler(studyId: string, options?: ValueRe
     // Match by keyword name or DICOM tag number
     switch (tagName) {
       case 'PatientName':
-        newValue = 'Anonymous'
+        if (!options?.uidsOnly) {
+          newValue = 'Anonymous'
+        }
         break
       case 'PatientID':
-        if (!options?.disablePatientId) {
-          newValue = getCachedValue('PatientID', originalValue, studyId)
+        if (!options?.uidsOnly && !options?.disablePatientId) {
+          newValue = getCachedValue('PatientID', originalValue, studyId, valueCache, options)
         }
         break
       case 'StudyID':
-        newValue = getCachedValue('StudyID', originalValue, studyId)
+        if (!options?.uidsOnly) {
+          newValue = getCachedValue('StudyID', originalValue, studyId, valueCache, options)
+        }
         break
       case 'AccessionNumber':
-        // Use StudyInstanceUID as fallback if AccessionNumber is empty
-        const keyValue = originalValue || studyId // Use studyId as fallback
-        newValue = getCachedValue('AccessionNumber', keyValue, studyId)
+        if (!options?.uidsOnly) {
+          // Use StudyInstanceUID as fallback if AccessionNumber is empty
+          const keyValue = originalValue || studyId
+          newValue = getCachedValue('AccessionNumber', keyValue, studyId, valueCache, options)
+        }
         break
       case 'StudyInstanceUID':
       case 'Study Instance UID':
-        newValue = getCachedValue('StudyInstanceUID', originalValue, resolveUidScopeKey(studyId, options))
+        newValue = getCachedValue('StudyInstanceUID', originalValue, resolveUidScopeKey(studyId, options), valueCache, options)
         break
       case 'SeriesInstanceUID':
       case 'Series Instance UID':
-        newValue = getCachedValue('SeriesInstanceUID', originalValue, resolveUidScopeKey(studyId, options))
+        newValue = getCachedValue('SeriesInstanceUID', originalValue, resolveUidScopeKey(studyId, options), valueCache, options)
         break
       case 'SOPInstanceUID':
       case 'SOP Instance UID':
-        newValue = getCachedValue('SOPInstanceUID', originalValue, resolveUidScopeKey(studyId, options))
+        newValue = getCachedValue('SOPInstanceUID', originalValue, resolveUidScopeKey(studyId, options), valueCache, options)
         break
     }
 
@@ -282,13 +342,13 @@ export function createValueReplacementHandler(studyId: string, options?: ValueRe
     if (!newValue) {
       switch (tagNumber) {
         case tag('Study Instance UID').toUpperCase():
-          newValue = getCachedValue('StudyInstanceUID', originalValue, resolveUidScopeKey(studyId, options))
+          newValue = getCachedValue('StudyInstanceUID', originalValue, resolveUidScopeKey(studyId, options), valueCache, options)
           break
         case tag('Series Instance UID').toUpperCase():
-          newValue = getCachedValue('SeriesInstanceUID', originalValue, resolveUidScopeKey(studyId, options))
+          newValue = getCachedValue('SeriesInstanceUID', originalValue, resolveUidScopeKey(studyId, options), valueCache, options)
           break
         case tag('SOP Instance UID').toUpperCase():
-          newValue = getCachedValue('SOPInstanceUID', originalValue, resolveUidScopeKey(studyId, options))
+          newValue = getCachedValue('SOPInstanceUID', originalValue, resolveUidScopeKey(studyId, options), valueCache, options)
           break
       }
     }
@@ -320,21 +380,26 @@ export function createAddTagsHandler() {
 /**
  * Clear the value cache for a specific study
  */
-export function clearStudyCache(studyId: string) {
-  studyValueCache.delete(studyId)
+export function clearStudyCache(_studyId: string) {
+  // Caches are now scoped to handler/context instances.
 }
 
 /**
  * Clear the value cache (useful for testing or new sessions)
  */
 export function clearValueCache() {
-  studyValueCache.clear()
+  // Caches are now scoped to individual handler/context instances. This remains
+  // for older tests and callers that used it as a reset hook.
 }
 
 /**
  * Get all special handlers as an array
  */
 export function getAllSpecialHandlers(jitterDays: number = 31, tagsToRemove: string[] = [], studyId: string = 'default', options?: ValueReplacementHandlerOptions) {
+  if (options?.uidsOnly) {
+    return [createValueReplacementHandler(studyId, options)]
+  }
+
   return [
     createRemoveTagsHandler(tagsToRemove),
     createDateJitterHandler(jitterDays),
@@ -394,6 +459,12 @@ export function getAllSpecialHandlersWithOverrides(
   if (overrides && Object.keys(overrides).length > 0) {
     handlers.push(createOverridesHandler(overrides))
   }
+
+  if (options?.uidsOnly) {
+    handlers.push(createValueReplacementHandler(studyId, options))
+    return handlers
+  }
+
   handlers.push(
     createRemoveTagsHandler(tagsToRemove),
     createDateJitterHandler(jitterDays),

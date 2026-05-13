@@ -234,6 +234,7 @@ export const columns: ColumnDef<DicomStudy>[] = [
       const uid = row.getValue('studyInstanceUID') as string
       return h('div', {
         class: 'font-mono text-xs text-muted-foreground max-w-[150px] truncate',
+        'data-testid': 'cell-study-uid',
         title: uid
       }, uid)
     },
