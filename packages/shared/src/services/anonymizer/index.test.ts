@@ -171,6 +171,33 @@ describe('Anonymizer Service (Effect Service Testing)', () => {
       }
     })
 
+    it('normalizes overlong numeric DS values before anonymization', async () => {
+      const dicomFile = addDicomTags(
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),
+        {
+          '00201041': { vr: 'DS', Value: ['326.3295593261719'] },
+        },
+      )
+
+      const parsedFile = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processor = yield* DicomProcessor
+          return yield* processor.parseFile(dicomFile)
+        }).pipe(Effect.provide(testLayer))
+      )
+
+      const result = await runTest(Effect.gen(function* () {
+        const anonymizer = yield* Anonymizer
+        const configService = yield* ConfigService
+        const config = yield* configService.getAnonymizationConfig
+        return yield* anonymizer.anonymizeFile(parsedFile, config)
+      }))
+
+      const resultDict = (dcmjs.data.DicomMessage.readFile(result.arrayBuffer) as any).dict
+      const sliceLocation = resultDict['00201041'].Value[0]
+      expect(String(sliceLocation).length).toBeLessThanOrEqual(16)
+    })
+
     it('should anonymize multiple files', async () => {
       const files = [
         loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC')

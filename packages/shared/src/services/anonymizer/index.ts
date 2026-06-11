@@ -58,10 +58,54 @@ const DERIVED_REPOSITORY_COUNT_TAGS = [
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer =>
   bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 
+const trimInsignificantDecimalZeros = (value: string): string =>
+  value
+    .replace(/(\.\d*?)0+(e|$)/i, '$1$2')
+    .replace(/\.(e|$)/i, '$1')
+    .replace(/e\+/i, 'e')
+
+function formatDicomDecimalString(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  if (Object.is(value, -0) || value === 0) return '0'
+
+  const candidates: string[] = []
+  for (let fractionDigits = 14; fractionDigits >= 0; fractionDigits--) {
+    candidates.push(trimInsignificantDecimalZeros(value.toFixed(fractionDigits)))
+  }
+  for (let precision = 15; precision >= 1; precision--) {
+    candidates.push(trimInsignificantDecimalZeros(value.toPrecision(precision)))
+  }
+  for (let fractionDigits = 14; fractionDigits >= 0; fractionDigits--) {
+    candidates.push(trimInsignificantDecimalZeros(value.toExponential(fractionDigits)))
+  }
+
+  const valid = candidates.find((candidate) => candidate.length <= STRING_VR_MAX_LENGTHS.DS)
+  if (valid) return valid
+
+  return trimInsignificantDecimalZeros(value.toExponential(8)).slice(0, STRING_VR_MAX_LENGTHS.DS)
+}
+
+function sanitizeDecimalStringValue(value: unknown): unknown {
+  if (typeof value === 'number') {
+    return String(value).length > STRING_VR_MAX_LENGTHS.DS
+      ? formatDicomDecimalString(value)
+      : value
+  }
+
+  if (typeof value !== 'string' || value.length <= STRING_VR_MAX_LENGTHS.DS) {
+    return value
+  }
+
+  const numericValue = Number(value.trim())
+  if (Number.isFinite(numericValue)) return formatDicomDecimalString(numericValue)
+
+  return value.slice(0, STRING_VR_MAX_LENGTHS.DS).trimEnd()
+}
+
 /**
  * Sanitize DICOM data by truncating string VR values that exceed their
  * max length per the DICOM standard. Some scanners produce non-conformant
- * data (e.g. CS values > 16 chars) which causes dcmjs to throw during write.
+ * data (e.g. DS values > 16 chars) which causes dcmjs to throw during write.
  *
  * This reads the DICOM, fixes offending values in the dict, and writes it
  * back so the deidentifier receives conformant data.
@@ -81,7 +125,17 @@ function sanitizeDicomVRLengths(uint8Array: Uint8Array): Uint8Array {
 
     for (let i = 0; i < element.Value.length; i++) {
       const val = element.Value[i]
-      if (typeof val === 'string' && val.length > maxLen) {
+      if (vr === 'DS') {
+        const sanitizedValue = sanitizeDecimalStringValue(val)
+        if (sanitizedValue !== val) {
+          console.warn(
+            `Normalizing non-conformant DICOM DS value: tag=${_tag}, ` +
+              `value="${val}" -> "${sanitizedValue}"`,
+          )
+          element.Value[i] = sanitizedValue
+          modified = true
+        }
+      } else if (typeof val === 'string' && val.length > maxLen) {
         console.warn(
           `Truncating non-conformant DICOM value: tag=${_tag}, vr=${vr}, ` +
             `value="${val}" (${val.length} chars > max ${maxLen})`,
