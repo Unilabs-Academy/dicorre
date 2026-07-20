@@ -603,16 +603,16 @@ function handleDownloadConfig() {
                 </select>
               </div>
 
-              <!-- Date Jitter -->
+              <!-- Birth Date Shift -->
               <!-- <div class="space-y-2">
-                <Label>Date Jitter (days)</Label>
+                <Label>Birth Date Shift (months)</Label>
                 <Input
                   type="number"
-                  :model-value="getFieldValue('anonymization.dateJitterDays')"
-                  @update:model-value="(v) => setFieldValue('anonymization.dateJitterDays', typeof v === 'number' ? v : (parseInt(String(v)) || 0))"
-                  placeholder="31"
-                  min="0"
-                  max="365"
+                  :model-value="getFieldValue('anonymization.birthDateShiftMonths')"
+                  @update:model-value="(v) => setFieldValue('anonymization.birthDateShiftMonths', typeof v === 'number' ? v : (parseInt(String(v)) || 0))"
+                  placeholder="1"
+                  min="-120"
+                  max="120"
                   :disabled="isProcessing"
                 />
               </div> -->

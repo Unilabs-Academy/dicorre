@@ -25,12 +25,18 @@ export const TestConfigLayer = Layer.succeed(
       useCustomHandlers: true,
       uidStrategy: 'perRun',
       dateJitterDays: 31,
+      birthDateShiftMonths: 1,
       organizationRoot: '1.2.826.0.1.3680043.8.498',
       preserveTags: [
         'Instance Number',
         'Modality',
         'Manufacturer',
-        'Protocol Name'
+        'Protocol Name',
+        "Patient's Sex",
+        'Study Date',
+        'Study Description',
+        'Series Date',
+        'Series Description'
       ],
       tagsToRemove: [
         'startswith:IssueDate',
@@ -56,12 +62,18 @@ export const TestConfigLayer = Layer.succeed(
         useCustomHandlers: true,
         uidStrategy: 'perRun',
         dateJitterDays: 31,
+        birthDateShiftMonths: 1,
         organizationRoot: '1.2.826.0.1.3680043.8.498',
         preserveTags: [
           'Instance Number',
           'Modality',
           'Manufacturer',
-          'Protocol Name'
+          'Protocol Name',
+          "Patient's Sex",
+          'Study Date',
+          'Study Description',
+          'Series Date',
+          'Series Description'
         ],
         tagsToRemove: [
           'startswith:IssueDate',

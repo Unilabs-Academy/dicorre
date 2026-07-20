@@ -21,6 +21,39 @@ const migrations: Record<number, Migration> = {
   // For now: v0 -> v1 introduce version field without structural changes
   0: (cfg) => {
     return { ...cfg, version: 1 }
+  },
+  1: (cfg) => {
+    const preserveTags = cfg.anonymization?.preserveTags
+    const legacyDefaultPreserveTags = [
+      'Instance Number',
+      'Modality',
+      'Manufacturer',
+      'Protocol Name',
+    ]
+    const retainedClinicalTags = [
+      "Patient's Sex",
+      'Study Date',
+      'Study Description',
+      'Series Date',
+      'Series Description',
+    ]
+    const usedLegacyDefaultPreserveTags =
+      Array.isArray(preserveTags) &&
+      preserveTags.length === legacyDefaultPreserveTags.length &&
+      legacyDefaultPreserveTags.every((tag) => preserveTags.includes(tag))
+    const migratedPreserveTags = usedLegacyDefaultPreserveTags
+      ? Array.from(new Set([...preserveTags, ...retainedClinicalTags]))
+      : preserveTags
+
+    return {
+      ...cfg,
+      version: 2,
+      anonymization: {
+        ...cfg.anonymization,
+        birthDateShiftMonths: cfg.anonymization?.birthDateShiftMonths ?? 1,
+        ...(migratedPreserveTags === undefined ? {} : { preserveTags: migratedPreserveTags }),
+      },
+    }
   }
 }
 
@@ -53,5 +86,3 @@ export function migrateConfig(raw: unknown, options?: { source?: 'persisted' | '
     return Effect.runSync(validated)
   }
 }
-
-

@@ -408,9 +408,13 @@ export const AnonymizerLive = Layer.effect(
           tag('Series Instance UID'),
           tag('SOP Instance UID'),
         ])
+        const overrideTags = new Set(
+          Object.keys(overrides || {}).map((key) => tag(key)),
+        )
         const configuredKeep = (config.preserveTags ? [...config.preserveTags] : [])
           .map((k) => tag(k))
           .filter((k) => !enforceUidStrategy || !coreUidTags.has(k))
+          .filter((k) => !overrideTags.has(k))
         const keep = Array.from(new Set(configuredKeep || []))
 
         // Configure deidentifier options
@@ -446,14 +450,14 @@ export const AnonymizerLive = Layer.effect(
           const specialHandlers =
             overrides && Object.keys(overrides).length > 0
               ? getAllSpecialHandlersWithOverrides(
-                  config.dateJitterDays || 31,
+                  config.birthDateShiftMonths ?? 1,
                   config.useCustomHandlers ? tagsToRemove : [],
                   originalStudyId,
                   handlerOptions,
                   overrides,
                 )
               : getAllSpecialHandlers(
-                  config.dateJitterDays || 31,
+                  config.birthDateShiftMonths ?? 1,
                   config.useCustomHandlers ? tagsToRemove : [],
                   originalStudyId,
                   handlerOptions,

@@ -88,6 +88,7 @@ export const ConfigServiceLive = Layer.scoped(
         preserveTags: preserveTags ? [...preserveTags] : undefined,
         tagsToRemove: anonymizationConfig.tagsToRemove ? [...anonymizationConfig.tagsToRemove] : undefined,
         dateJitterDays: anonymizationConfig.dateJitterDays,
+        birthDateShiftMonths: anonymizationConfig.birthDateShiftMonths,
         useCustomHandlers: anonymizationConfig.useCustomHandlers,
         uidStrategy: anonymizationConfig.uidStrategy ?? 'perRun',
         organizationRoot: anonymizationConfig.organizationRoot

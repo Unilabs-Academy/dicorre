@@ -134,6 +134,14 @@ describe('ConfigService (Effect Service Testing)', () => {
       expect(migrated.version).toBe(CURRENT_CONFIG_VERSION)
       expect(migrated.dicomServer.timeout).toBeDefined()
       expect(Array.isArray(migrated.anonymization.profileOptions)).toBe(true)
+      expect(migrated.anonymization.birthDateShiftMonths).toBe(1)
+      expect(migrated.anonymization.preserveTags).toEqual(expect.arrayContaining([
+        "Patient's Sex",
+        'Study Date',
+        'Study Description',
+        'Series Date',
+        'Series Description',
+      ]))
     })
 
     it('preserves user overrides over defaults during persisted migration', () => {
@@ -156,6 +164,21 @@ describe('ConfigService (Effect Service Testing)', () => {
       expect(migrated.dicomServer.timeout).toBe(1234)
       expect(migrated.anonymization.removePrivateTags).toBe(false)
       expect(migrated.plugins?.enabled).toContain('image-converter')
+    })
+
+    it('does not add retained clinical tags to a customized preserve list', () => {
+      const customized = {
+        version: 1,
+        dicomServer: { url: '/api/test' },
+        anonymization: {
+          profileOptions: ['BasicProfile'],
+          removePrivateTags: true,
+          preserveTags: ['Modality'],
+        },
+      }
+
+      const migrated = migrateConfig(customized, { source: 'persisted' })
+      expect(migrated.anonymization.preserveTags).toEqual(['Modality'])
     })
 
     it('rejects invalid uploaded config without filling defaults', () => {

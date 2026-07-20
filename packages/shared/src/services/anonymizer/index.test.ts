@@ -198,6 +198,52 @@ describe('Anonymizer Service (Effect Service Testing)', () => {
       expect(String(sliceLocation).length).toBeLessThanOrEqual(16)
     })
 
+    it('retains requested clinical fields and shifts only birth date by one month', async () => {
+      const dicomFile = addDicomTags(
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),
+        {
+          '00100040': { vr: 'CS', Value: ['F'] },
+          '00100030': { vr: 'DA', Value: ['19800115'] },
+          '00080020': { vr: 'DA', Value: ['20170618'] },
+          '00080021': { vr: 'DA', Value: ['20170619'] },
+          '00081030': { vr: 'LO', Value: ['CHEST HRCT'] },
+          '0008103E': { vr: 'LO', Value: ['AXIAL LUNG'] },
+        },
+      )
+      const parsedFile = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processor = yield* DicomProcessor
+          return yield* processor.parseFile(dicomFile)
+        }).pipe(Effect.provide(testLayer))
+      )
+      const config: AnonymizationConfig = {
+        profileOptions: ['BasicProfile', 'RetainLongModifDatesOption'],
+        removePrivateTags: true,
+        useCustomHandlers: true,
+        birthDateShiftMonths: 1,
+        preserveTags: [
+          "Patient's Sex",
+          'Study Date',
+          'Study Description',
+          'Series Date',
+          'Series Description',
+        ],
+      }
+
+      const result = await runTest(Effect.gen(function* () {
+        const anonymizer = yield* Anonymizer
+        return yield* anonymizer.anonymizeFile(parsedFile, config)
+      }))
+      const resultDict = (dcmjs.data.DicomMessage.readFile(result.arrayBuffer) as any).dict
+
+      expect(resultDict['00100040']?.Value?.[0]).toBe('F')
+      expect(resultDict['00100030']?.Value?.[0]).toBe('19800215')
+      expect(resultDict['00080020']?.Value?.[0]).toBe('20170618')
+      expect(resultDict['00080021']?.Value?.[0]).toBe('20170619')
+      expect(resultDict['00081030']?.Value?.[0]).toBe('CHEST HRCT')
+      expect(resultDict['0008103E']?.Value?.[0]).toBe('AXIAL LUNG')
+    })
+
     it('should anonymize multiple files', async () => {
       const files = [
         loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC')

@@ -192,13 +192,13 @@ export const appConfigEditSchema: ConfigEditSchema = {
         { value: 'deterministic', label: 'Deterministic (stable mapping)' }
       ]
     },
-    dateJitterDays: {
+    birthDateShiftMonths: {
       type: 'number',
-      label: 'Date Jitter (days)',
-      description: 'Random date shift range for temporal anonymization',
-      min: 0,
-      max: 365,
-      placeholder: '31'
+      label: 'Birth Date Shift (months)',
+      description: "Calendar-month shift applied to Patient's Birth Date",
+      min: -120,
+      max: 120,
+      placeholder: '1'
     },
     organizationRoot: {
       type: 'text',

@@ -53,7 +53,7 @@ Controls how DICOM files are de-identified before sending.
     "profileOptions": ["BasicProfile"],
     "removePrivateTags": true,
     "useCustomHandlers": true,
-    "dateJitterDays": 31,
+    "birthDateShiftMonths": 1,
     "organizationRoot": "1.2.826.0.1.3680043.8.498",
     "replacements": {
       "default": "REMOVED",
@@ -63,7 +63,13 @@ Controls how DICOM files are de-identified before sending.
       "patientBirthDate": "19000101",
       "institution": "ANONYMIZED"
     },
-    "preserveTags": ["00080016", "00080018"],
+    "preserveTags": [
+      "Patient's Sex",
+      "Study Date",
+      "Study Description",
+      "Series Date",
+      "Series Description"
+    ],
     "tagsToRemove": ["PatientAddress", "ReferringPhysicianName"],
     "customReplacements": {}
   }
@@ -202,10 +208,14 @@ Controls whether private DICOM tags are removed.
 - `true`: Remove all private tags (recommended for maximum privacy)
 - `false`: Preserve private tags (may contain vendor-specific PHI)
 
-#### `dateJitterDays` (number, 0-365)
-Number of days to randomly shift dates when using temporal modification options.
-- Adds randomness to date shifting for additional privacy protection
-- Only effective with `RetainLongModifDatesOption`
+#### `birthDateShiftMonths` (integer, -120 to 120)
+Number of calendar months by which to shift Patient's Birth Date.
+- Defaults to `1`
+- The day is clamped to the final valid day of the target month
+- Study Date and Series Date are preserved separately through `preserveTags`
+
+#### `dateJitterDays` (number, 0-365, deprecated)
+Accepted for backward compatibility with older configurations but no longer applied.
 
 #### `organizationRoot` (string)
 Organization Identifier (OID) root for generating new UIDs.
@@ -298,7 +308,8 @@ The complete configuration file structure:
     "profileOptions": "array<DicomProfileOption> (required)",
     "removePrivateTags": "boolean (required)",
     "useCustomHandlers": "boolean (optional)",
-    "dateJitterDays": "number 0-365 (optional)",
+    "birthDateShiftMonths": "integer -120 to 120 (optional, default 1)",
+    "dateJitterDays": "deprecated number (optional, ignored)",
     "organizationRoot": "string OID format (optional)",
     "replacements": "object (optional)",
     "preserveTags": "array<string> (optional)",

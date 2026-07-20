@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   createRemoveTagsHandler,
   createDateJitterHandler,
+  createBirthDateShiftHandler,
   createValueReplacementHandler,
   clearValueCache,
   getAllSpecialHandlers
@@ -14,12 +15,23 @@ interface MockDicomElement {
   tag?: { toString: () => string }
   vr?: string
   VR?: string
-  value?: string
+  value?: any
   deleted?: boolean
-  setValue?: (value: string) => void
-  getValue?: () => string
+  setValue?: (value: unknown) => void
+  getValue?: () => unknown
   delete?: () => void
   remove?: () => void
+}
+
+function createLibraryElement(tag: string, vr: string, initialValue: string) {
+  let value = [initialValue]
+  return {
+    getTag: () => tag,
+    getVR: () => vr,
+    getValue: () => value,
+    setValue: vi.fn((nextValue: unknown) => { value = nextValue as string[] }),
+    readValue: () => value[0],
+  }
 }
 
 function createMockElement(props: Partial<MockDicomElement> = {}): MockDicomElement {
@@ -29,7 +41,7 @@ function createMockElement(props: Partial<MockDicomElement> = {}): MockDicomElem
     vr: 'ST',
     value: '',
     deleted: false,
-    setValue: vi.fn((value: string) => { element.value = value }),
+    setValue: vi.fn((value: unknown) => { element.value = value }),
     getValue: vi.fn(() => element.value || ''),
     delete: vi.fn(() => { element.deleted = true }),
     remove: vi.fn(() => { element.deleted = true }),
@@ -223,6 +235,32 @@ describe('anonymizationHandlers', () => {
     })
   })
 
+  describe('createBirthDateShiftHandler', () => {
+    it('uses the library DataElement API to shift birth date by one calendar month', () => {
+      const handler = createBirthDateShiftHandler(1)
+      const element = createLibraryElement('00100030', 'DA', '19800115')
+
+      expect(handler(element, {})).toBe(true)
+      expect(element.readValue()).toBe('19800215')
+    })
+
+    it('clamps the day to the end of the target month', () => {
+      const handler = createBirthDateShiftHandler(1)
+      const element = createLibraryElement('00100030', 'DA', '20230131')
+
+      expect(handler(element, {})).toBe(true)
+      expect(element.readValue()).toBe('20230228')
+    })
+
+    it('does not modify other date attributes', () => {
+      const handler = createBirthDateShiftHandler(1)
+      const element = createLibraryElement('00080020', 'DA', '20240315')
+
+      expect(handler(element, {})).toBe(false)
+      expect(element.readValue()).toBe('20240315')
+    })
+  })
+
   describe('createValueReplacementHandler', () => {
     it('should replace PatientName with "Anonymous"', () => {
       const handler = createValueReplacementHandler('test-study-id')
@@ -330,7 +368,7 @@ describe('anonymizationHandlers', () => {
 
   describe('getAllSpecialHandlers', () => {
     it('should return an array of handler functions', () => {
-      const handlers = getAllSpecialHandlers(31, ['PatientAddress'])
+      const handlers = getAllSpecialHandlers(1, ['PatientAddress'])
 
       expect(Array.isArray(handlers)).toBe(true)
       expect(handlers.length).toBeGreaterThan(0)
@@ -339,25 +377,19 @@ describe('anonymizationHandlers', () => {
       })
     })
 
-    it('should pass jitterDays parameter to date handler', () => {
-      const handlers = getAllSpecialHandlers(5, [])
-      const dateHandler = handlers[1] // Assuming date handler is second
+    it('should pass birthDateShiftMonths to the birth date handler', () => {
+      const handlers = getAllSpecialHandlers(2, [])
+      const dateHandler = handlers[1]
+      const element = createLibraryElement('00100030', 'DA', '20240315')
 
-      const element = createMockElement({
-        keyword: 'StudyDate',
-        vr: 'DA',
-        value: '20240315'
-      })
-
-      // This is more of an integration test, but we can verify it processes dates
       const result = dateHandler(element, {})
       expect(result).toBe(true)
-      expect(element.value).not.toBe('20240315')
+      expect(element.readValue()).toBe('20240515')
     })
 
     it('should pass tagsToRemove parameter to remove handler', () => {
       const testTags = ['PatientAddress']
-      const handlers = getAllSpecialHandlers(31, testTags)
+      const handlers = getAllSpecialHandlers(1, testTags)
       const removeHandler = handlers[0] // Assuming remove handler is first
 
       const element = createMockElement({

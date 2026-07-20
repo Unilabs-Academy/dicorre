@@ -3,10 +3,55 @@
  * Replicates functionality from Python deid package
  */
 
-import { tag } from '@dicorre/shared/utils/dicom-tag-dictionary'
+import { getTagName, tag } from '@dicorre/shared/utils/dicom-tag-dictionary'
 
 // Note: Using any type for DicomElement as the library types may be incomplete
-type DicomElement = any
+type DicomElement = {
+  delete?: () => void
+  remove?: () => void
+  getTag?: () => string
+  getVR?: () => string
+  getValue?: () => unknown
+  setValue?: (value: unknown) => void
+  keyword?: string
+  name?: string
+  tag?: { toString: () => string } | string
+  vr?: string
+  VR?: string
+  value?: unknown
+}
+
+function getElementTagNumber(element: DicomElement): string {
+  const rawTag = element.getTag?.() ?? element.tag?.toString() ?? ''
+  return rawTag.replace(/[^0-9A-Fa-f]/g, '').toUpperCase()
+}
+
+function getElementTagName(element: DicomElement): string {
+  if (element.keyword) return element.keyword
+  if (element.name) return element.name
+
+  const tagNumber = getElementTagNumber(element)
+  return tagNumber ? getTagName(tagNumber).replace(/[^A-Za-z0-9]/g, '') : ''
+}
+
+function getElementVr(element: DicomElement): string {
+  return element.getVR?.() ?? element.vr ?? element.VR ?? ''
+}
+
+function getElementValue(element: DicomElement): unknown {
+  const value = element.getValue ? element.getValue() : element.value
+  return Array.isArray(value) ? value[0] : value
+}
+
+function setElementValue(element: DicomElement, value: string): void {
+  if (element.setValue) {
+    // @umessen/dicom-deidentifier DataElement values are arrays. Keep scalar
+    // values for the legacy mock shape used by downstream callers/tests.
+    element.setValue(element.getTag ? [value] : value)
+  } else {
+    element.value = value
+  }
+}
 
 // Cache for consistent value generation within one anonymization context.
 // Key is studyId, value is a map of field->originalValue->newValue.
@@ -215,8 +260,7 @@ function matchesPattern(tagName: string, pattern: string): boolean {
  */
 export function createRemoveTagsHandler(tagsToRemove: string[] = []) {
   return (element: DicomElement, _options: any) => {
-    // Try different ways to get the tag name based on library implementation
-    const tagName = element.keyword || element.name || element.tag?.toString() || ''
+    const tagName = getElementTagName(element)
 
     // Check if this tag should be removed
     for (const pattern of tagsToRemove) {
@@ -243,24 +287,72 @@ export function createRemoveTagsHandler(tagsToRemove: string[] = []) {
  */
 export function createDateJitterHandler(maxDays: number = 31) {
   return (element: DicomElement, _options: any) => {
-    const tagName = element.keyword || element.name || ''
-    const vr = element.vr || element.VR
+    const tagName = getElementTagName(element)
+    const vr = getElementVr(element)
 
     // Apply jitter to date fields ending with 'Date'
     if (tagName.endsWith('Date') && vr === 'DA') {
-      const originalValue = element.value || element.getValue?.()
+      const originalValue = getElementValue(element)
       if (typeof originalValue === 'string' && originalValue.length === 8) {
         const jitteredValue = applyDateJitter(originalValue, maxDays)
-        if (element.setValue) {
-          element.setValue(jitteredValue)
-        } else {
-          element.value = jitteredValue
-        }
+        setElementValue(element, jitteredValue)
         return true // Skip further processing
       }
     }
 
     return false // Continue with default processing
+  }
+}
+
+/**
+ * Shift Patient's Birth Date by a fixed number of calendar months.
+ * The day is clamped to the last valid day of the target month, so e.g.
+ * January 31 becomes February 28 (or 29 in a leap year).
+ */
+export function createBirthDateShiftHandler(months: number = 1) {
+  const patientBirthDateTag = tag("Patient's Birth Date").toUpperCase()
+
+  return (element: DicomElement, _options: any) => {
+    if (getElementTagNumber(element) !== patientBirthDateTag || getElementVr(element) !== 'DA') {
+      return false
+    }
+
+    const originalValue = getElementValue(element)
+    if (typeof originalValue !== 'string' || !/^\d{8}$/.test(originalValue)) {
+      return false
+    }
+
+    const year = Number(originalValue.slice(0, 4))
+    const monthIndex = Number(originalValue.slice(4, 6)) - 1
+    const day = Number(originalValue.slice(6, 8))
+    const sourceDate = new Date(Date.UTC(year, monthIndex, day))
+    if (
+      sourceDate.getUTCFullYear() !== year ||
+      sourceDate.getUTCMonth() !== monthIndex ||
+      sourceDate.getUTCDate() !== day
+    ) {
+      return false
+    }
+
+    const targetMonthStart = new Date(Date.UTC(year, monthIndex + months, 1))
+    const lastDay = new Date(Date.UTC(
+      targetMonthStart.getUTCFullYear(),
+      targetMonthStart.getUTCMonth() + 1,
+      0,
+    )).getUTCDate()
+    const shiftedDate = new Date(Date.UTC(
+      targetMonthStart.getUTCFullYear(),
+      targetMonthStart.getUTCMonth(),
+      Math.min(day, lastDay),
+    ))
+    const shiftedValue = [
+      shiftedDate.getUTCFullYear().toString().padStart(4, '0'),
+      (shiftedDate.getUTCMonth() + 1).toString().padStart(2, '0'),
+      shiftedDate.getUTCDate().toString().padStart(2, '0'),
+    ].join('')
+
+    setElementValue(element, shiftedValue)
+    return true
   }
 }
 
@@ -280,21 +372,13 @@ function resolveUidScopeKey(studyId: string, options?: ValueReplacementHandlerOp
   return options?.uidScopeKey || studyId
 }
 
-function normalizeTagNumber(tagValue: string): string {
-  return tagValue.replace(/[^0-9A-Fa-f]/g, '').toUpperCase()
-}
-
 export function createValueReplacementHandler(studyId: string, options?: ValueReplacementHandlerOptions) {
   const valueCache = options?.valueCache ?? createValueReplacementCache()
 
   return (element: DicomElement, _options: any) => {
-    const tagName = element.keyword || element.name || ''
-    const tagNumber = normalizeTagNumber(element.tag?.toString() || '')
-    const rawValue =
-      element.value === '' || element.value === undefined || element.value === null
-        ? element.getValue?.()
-        : element.value
-    const originalValue = Array.isArray(rawValue) ? rawValue[0] : rawValue
+    const tagName = getElementTagName(element)
+    const tagNumber = getElementTagNumber(element)
+    const originalValue = getElementValue(element)
 
     if (typeof originalValue !== 'string') return false
 
@@ -354,11 +438,7 @@ export function createValueReplacementHandler(studyId: string, options?: ValueRe
     }
 
     if (newValue) {
-      if (element.setValue) {
-        element.setValue(newValue)
-      } else {
-        element.value = newValue
-      }
+      setElementValue(element, newValue)
       return true // Skip further processing
     }
 
@@ -395,14 +475,14 @@ export function clearValueCache() {
 /**
  * Get all special handlers as an array
  */
-export function getAllSpecialHandlers(jitterDays: number = 31, tagsToRemove: string[] = [], studyId: string = 'default', options?: ValueReplacementHandlerOptions) {
+export function getAllSpecialHandlers(birthDateShiftMonths: number = 1, tagsToRemove: string[] = [], studyId: string = 'default', options?: ValueReplacementHandlerOptions) {
   if (options?.uidsOnly) {
     return [createValueReplacementHandler(studyId, options)]
   }
 
   return [
     createRemoveTagsHandler(tagsToRemove),
-    createDateJitterHandler(jitterDays),
+    createBirthDateShiftHandler(birthDateShiftMonths),
     createValueReplacementHandler(studyId, options),
     createAddTagsHandler()
   ]
@@ -424,9 +504,9 @@ export function createOverridesHandler(overrides: Record<string, string>) {
     }
   }
 
-  return (element: any, _options: any) => {
-    const tagName = element.keyword || element.name || ''
-    const tagNumber = element.tag?.toString() || ''
+  return (element: DicomElement, _options: any) => {
+    const tagName = getElementTagName(element)
+    const tagNumber = getElementTagNumber(element)
 
     let newValue: string | undefined
     if (overrides[tagName] !== undefined) {
@@ -436,11 +516,7 @@ export function createOverridesHandler(overrides: Record<string, string>) {
     }
 
     if (newValue !== undefined) {
-      if (element.setValue) {
-        element.setValue(newValue)
-      } else {
-        element.value = newValue
-      }
+      setElementValue(element, newValue)
       return true // Skip further processing for this element
     }
 
@@ -449,7 +525,7 @@ export function createOverridesHandler(overrides: Record<string, string>) {
 }
 
 export function getAllSpecialHandlersWithOverrides(
-  jitterDays: number = 31,
+  birthDateShiftMonths: number = 1,
   tagsToRemove: string[] = [],
   studyId: string = 'default',
   options?: ValueReplacementHandlerOptions,
@@ -467,7 +543,7 @@ export function getAllSpecialHandlersWithOverrides(
 
   handlers.push(
     createRemoveTagsHandler(tagsToRemove),
-    createDateJitterHandler(jitterDays),
+    createBirthDateShiftHandler(birthDateShiftMonths),
     createValueReplacementHandler(studyId, options),
     createAddTagsHandler()
   )

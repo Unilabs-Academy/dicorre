@@ -83,6 +83,11 @@ export const AnonymizationConfigSchema = Schema.Struct({
     Schema.greaterThanOrEqualTo(0, { message: () => "dateJitterDays must be >= 0" }),
     Schema.lessThanOrEqualTo(365, { message: () => "dateJitterDays must be <= 365" })
   )),
+  birthDateShiftMonths: Schema.optional(Schema.Number.pipe(
+    Schema.int({ message: () => "birthDateShiftMonths must be an integer" }),
+    Schema.greaterThanOrEqualTo(-120, { message: () => "birthDateShiftMonths must be >= -120" }),
+    Schema.lessThanOrEqualTo(120, { message: () => "birthDateShiftMonths must be <= 120" })
+  )),
   useCustomHandlers: Schema.optional(Schema.Boolean),
   uidStrategy: Schema.optional(UidStrategySchema),
   organizationRoot: Schema.optional(Schema.String.pipe(
@@ -147,7 +152,7 @@ const PluginsConfigSchema = Schema.Struct({
   })
 )
 
-export const CURRENT_CONFIG_VERSION = 1 as const
+export const CURRENT_CONFIG_VERSION = 2 as const
 
 export const AppConfigSchema = Schema.Struct({
   // Version is optional to allow loading legacy configs; migration will enforce current version.
