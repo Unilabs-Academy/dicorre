@@ -1,0 +1,11 @@
+.git
+.github
+.railway
+.vscode
+**/node_modules
+**/dist
+**/coverage
+test-data
+docs
+*.log
+.DS_Store
