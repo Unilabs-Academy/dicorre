@@ -198,6 +198,61 @@ describe('Anonymizer Service (Effect Service Testing)', () => {
       expect(String(sliceLocation).length).toBeLessThanOrEqual(16)
     })
 
+    it('normalizes overlong numeric DS values nested in sequences before anonymization', async () => {
+      const originalContourData = [
+        '28.902055664100004',
+        '29.71992213772286',
+        '-62.96375308967429',
+      ]
+      const dicomFile = addDicomTags(
+        loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),
+        {
+          '30060039': {
+            vr: 'SQ',
+            Value: [
+              {
+                '30060040': {
+                  vr: 'SQ',
+                  Value: [
+                    {
+                      '30060050': {
+                        vr: 'DS',
+                        Value: originalContourData,
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      )
+
+      const parsedFile = await Effect.runPromise(
+        Effect.gen(function* () {
+          const processor = yield* DicomProcessor
+          return yield* processor.parseFile(dicomFile)
+        }).pipe(Effect.provide(testLayer))
+      )
+
+      const result = await runTest(Effect.gen(function* () {
+        const anonymizer = yield* Anonymizer
+        const configService = yield* ConfigService
+        const config = yield* configService.getAnonymizationConfig
+        return yield* anonymizer.anonymizeFile(parsedFile, config)
+      }))
+
+      const resultDict = (dcmjs.data.DicomMessage.readFile(result.arrayBuffer) as any).dict
+      const contourData =
+        resultDict['30060039'].Value[0]['30060040'].Value[0]['30060050'].Value
+
+      expect(contourData).toHaveLength(originalContourData.length)
+      for (let i = 0; i < contourData.length; i++) {
+        expect(String(contourData[i]).length).toBeLessThanOrEqual(16)
+        expect(contourData[i]).toBeCloseTo(Number(originalContourData[i]), 10)
+      }
+    })
+
     it('retains requested clinical fields and shifts only birth date by one month', async () => {
       const dicomFile = addDicomTags(
         loadTestDicomFile('CASES/Caso1/DICOM/0000042D/AA4B9094/AAAB4A82/00002C50/EE0BF3EC'),

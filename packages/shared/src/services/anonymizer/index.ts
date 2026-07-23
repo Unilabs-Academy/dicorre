@@ -102,6 +102,64 @@ function sanitizeDecimalStringValue(value: unknown): unknown {
   return value.slice(0, STRING_VR_MAX_LENGTHS.DS).trimEnd()
 }
 
+type DicomDictionary = Record<string, DicomElement>
+
+type DicomElement = {
+  vr?: string
+  Value?: unknown[]
+}
+
+type SanitizationSummary = Map<string, { vr: string; count: number }>
+
+function recordSanitizedValue(
+  summary: SanitizationSummary,
+  tagNumber: string,
+  vr: string,
+): void {
+  const existing = summary.get(tagNumber)
+  if (existing) {
+    existing.count++
+  } else {
+    summary.set(tagNumber, { vr, count: 1 })
+  }
+}
+
+function sanitizeDicomDictionary(
+  dict: DicomDictionary,
+  summary: SanitizationSummary,
+): void {
+  for (const [tagNumber, element] of Object.entries(dict)) {
+    const vr = element?.vr
+    if (!vr || !Array.isArray(element.Value)) continue
+
+    if (vr === 'SQ') {
+      for (const item of element.Value) {
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          sanitizeDicomDictionary(item as DicomDictionary, summary)
+        }
+      }
+      continue
+    }
+
+    const maxLen = STRING_VR_MAX_LENGTHS[vr]
+    if (!maxLen) continue
+
+    for (let i = 0; i < element.Value.length; i++) {
+      const value = element.Value[i]
+      if (vr === 'DS') {
+        const sanitizedValue = sanitizeDecimalStringValue(value)
+        if (sanitizedValue !== value) {
+          element.Value[i] = sanitizedValue
+          recordSanitizedValue(summary, tagNumber, vr)
+        }
+      } else if (typeof value === 'string' && value.length > maxLen) {
+        element.Value[i] = value.slice(0, maxLen)
+        recordSanitizedValue(summary, tagNumber, vr)
+      }
+    }
+  }
+}
+
 /**
  * Sanitize DICOM data by truncating string VR values that exceed their
  * max length per the DICOM standard. Some scanners produce non-conformant
@@ -112,41 +170,17 @@ function sanitizeDecimalStringValue(value: unknown): unknown {
  */
 function sanitizeDicomVRLengths(uint8Array: Uint8Array): Uint8Array {
   const dicomData = dcmjs.data.DicomMessage.readFile(toArrayBuffer(uint8Array)) as any
-  const dict = dicomData.dict as Record<string, { vr?: string; Value?: any[] }>
+  const summary: SanitizationSummary = new Map()
 
-  let modified = false
+  sanitizeDicomDictionary(dicomData.dict as DicomDictionary, summary)
 
-  for (const [_tag, element] of Object.entries(dict)) {
-    const vr = element?.vr
-    if (!vr || !element.Value || !Array.isArray(element.Value)) continue
+  if (summary.size === 0) return uint8Array
 
-    const maxLen = STRING_VR_MAX_LENGTHS[vr]
-    if (!maxLen) continue
-
-    for (let i = 0; i < element.Value.length; i++) {
-      const val = element.Value[i]
-      if (vr === 'DS') {
-        const sanitizedValue = sanitizeDecimalStringValue(val)
-        if (sanitizedValue !== val) {
-          console.warn(
-            `Normalizing non-conformant DICOM DS value: tag=${_tag}, ` +
-              `value="${val}" -> "${sanitizedValue}"`,
-          )
-          element.Value[i] = sanitizedValue
-          modified = true
-        }
-      } else if (typeof val === 'string' && val.length > maxLen) {
-        console.warn(
-          `Truncating non-conformant DICOM value: tag=${_tag}, vr=${vr}, ` +
-            `value="${val}" (${val.length} chars > max ${maxLen})`,
-        )
-        element.Value[i] = val.slice(0, maxLen)
-        modified = true
-      }
-    }
+  for (const [tagNumber, { vr, count }] of summary) {
+    console.warn(
+      `Normalized ${count} non-conformant DICOM ${vr} value(s): tag=${tagNumber}`,
+    )
   }
-
-  if (!modified) return uint8Array
 
   // Write back with allowInvalidVRLength as a safety net in case
   // there are other edge cases we didn't catch above
